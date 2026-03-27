@@ -7,6 +7,44 @@ import { estimateBorrowApyAfterDebt } from "@/lib/irm";
 import { formatPct, formatUsd } from "@/lib/utils";
 import { fetchTokenPrices, getTokenPrice } from "@/lib/api/coingecko";
 
+// ─── Slippage Simulator helpers ───────────────────────────────────────────────
+interface SlippageResult {
+  slippageBps: number;
+  totalSlippagePct: number;
+  slippageCostUsd: number;
+  netApyAfterSlippage: number;
+  breakEvenDays: number;
+}
+
+function computeSlippage(
+  loops: number,
+  slippageBps: number,
+  startingValue: number,
+  totalAssets: number,
+  netApy: number
+): SlippageResult {
+  const slippagePerSwap = slippageBps / 10_000;
+  // Each loop: swap stablecoin → collateral, once per loop
+  const totalSlippagePct = (1 - Math.pow(1 - slippagePerSwap, loops)) * 100;
+  const slippageCostUsd = (totalSlippagePct / 100) * totalAssets;
+  const netApyAfterSlippage =
+    startingValue > 0
+      ? netApy - (slippageCostUsd / startingValue) * 100
+      : netApy;
+  // Days to recoup slippage cost from net yield
+  const dailyYield = (netApy / 100) * startingValue / 365;
+  const breakEvenDays =
+    dailyYield > 0 ? slippageCostUsd / dailyYield : Infinity;
+
+  return {
+    slippageBps,
+    totalSlippagePct,
+    slippageCostUsd,
+    netApyAfterSlippage,
+    breakEvenDays,
+  };
+}
+
 interface LoopingCalculatorProps {
   strategies: StrategyRow[];
   morphoMarkets: MorphoMarket[];
@@ -24,6 +62,9 @@ export default function LoopingCalculator({
   const [startingValue, setStartingValue] = useState(100000);
   const [initialLtv, setInitialLtv] = useState(75);
   const [targetLeverage, setTargetLeverage] = useState(3);
+
+  // Slippage simulator
+  const [slippageBps, setSlippageBps] = useState(5); // default 5 bps = 0.05%
 
   // Prices
   const [prices, setPrices] = useState<Record<string, number>>({});
@@ -190,6 +231,20 @@ export default function LoopingCalculator({
     collateralPrice,
     debtTokenPrice,
   ]);
+
+  // Slippage simulation result
+  const slippageResult = useMemo<SlippageResult | null>(() => {
+    if (!outputs || !isFinite(outputs.loopsRequired)) return null;
+    const loops = Math.ceil(outputs.loopsRequired);
+    if (loops <= 0) return null;
+    return computeSlippage(
+      loops,
+      slippageBps,
+      startingValue,
+      outputs.assets,
+      outputs.netApy
+    );
+  }, [outputs, slippageBps, startingValue]);
 
   return (
     <div>
@@ -379,6 +434,114 @@ export default function LoopingCalculator({
           )}
         </div>
       </div>
+
+      {/* ── Slippage / Transaction Simulator ─────────────────────────────── */}
+      <div className="mt-10 bg-gray-800/40 rounded-xl border border-purple-700/40 p-6">
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-purple-400 text-lg">⚙️</span>
+          <h3 className="text-base font-semibold text-purple-300 uppercase tracking-wide">
+            Transaction Slippage Simulator
+          </h3>
+        </div>
+        <p className="text-gray-400 text-sm mb-5">
+          Each loop requires a stablecoin → collateral swap on a DEX. This
+          simulator estimates how much you lose to slippage across all loops and
+          how long until the position breaks even.
+        </p>
+
+        {/* Slippage input */}
+        <div className="mb-5">
+          <label className="block text-sm text-gray-400 mb-1.5">
+            Slippage per Swap — <span className="text-purple-300 font-mono">{slippageBps} bps ({(slippageBps / 100).toFixed(2)}%)</span>
+          </label>
+          <input
+            type="range"
+            min={1}
+            max={100}
+            value={slippageBps}
+            onChange={(e) => setSlippageBps(Number(e.target.value))}
+            className="w-full accent-purple-500"
+          />
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>1 bps (0.01%) — tight DEX/aggregator</span>
+            <span>100 bps (1%) — wide spread</span>
+          </div>
+        </div>
+
+        {slippageResult ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <SlippageCard
+              label="Total Slippage"
+              value={`${slippageResult.totalSlippagePct.toFixed(3)}%`}
+              sub={`across ${outputs ? Math.ceil(outputs.loopsRequired) : 0} loops`}
+              color="text-amber-300"
+            />
+            <SlippageCard
+              label="Slippage Cost"
+              value={formatUsd(slippageResult.slippageCostUsd)}
+              sub="one-time entry cost"
+              color="text-red-400"
+            />
+            <SlippageCard
+              label="Net APY (after slippage)"
+              value={formatPct(slippageResult.netApyAfterSlippage)}
+              sub="annualised on starting capital"
+              color={slippageResult.netApyAfterSlippage > 0 ? "text-emerald-400" : "text-red-400"}
+            />
+            <SlippageCard
+              label="Break-even"
+              value={
+                isFinite(slippageResult.breakEvenDays)
+                  ? `${slippageResult.breakEvenDays.toFixed(1)} days`
+                  : "Never"
+              }
+              sub="days to recoup slippage cost"
+              color={
+                !isFinite(slippageResult.breakEvenDays) || slippageResult.breakEvenDays > 180
+                  ? "text-red-400"
+                  : slippageResult.breakEvenDays > 30
+                  ? "text-amber-300"
+                  : "text-emerald-400"
+              }
+            />
+          </div>
+        ) : (
+          <div className="text-gray-500 text-sm text-center py-4">
+            {!outputs
+              ? "Select a debt market to run the simulator"
+              : "Leverage exceeds max — reduce target leverage to simulate slippage"}
+          </div>
+        )}
+
+        {/* Visual slippage bar */}
+        {slippageResult && outputs && (
+          <div className="mt-5">
+            <div className="text-xs text-gray-500 mb-1">
+              Slippage drag on Net APY (before vs. after)
+            </div>
+            <div className="relative h-5 bg-gray-700 rounded-full overflow-hidden">
+              {/* Gross net APY bar */}
+              <div
+                className="absolute inset-y-0 left-0 bg-emerald-600/60 rounded-full transition-all"
+                style={{
+                  width: `${Math.min(Math.max((outputs.netApy / 30) * 100, 0), 100)}%`,
+                }}
+              />
+              {/* After-slippage bar */}
+              <div
+                className="absolute inset-y-0 left-0 bg-purple-500/60 rounded-full transition-all"
+                style={{
+                  width: `${Math.min(Math.max((slippageResult.netApyAfterSlippage / 30) * 100, 0), 100)}%`,
+                }}
+              />
+            </div>
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span className="text-emerald-400">Before slippage: {formatPct(outputs.netApy)}</span>
+              <span className="text-purple-400">After slippage: {formatPct(slippageResult.netApyAfterSlippage)}</span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -431,6 +594,26 @@ function OutputCard({
       >
         {value}
       </div>
+    </div>
+  );
+}
+
+function SlippageCard({
+  label,
+  value,
+  sub,
+  color,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  color: string;
+}) {
+  return (
+    <div className="bg-gray-900/60 rounded-lg p-4 border border-purple-700/30">
+      <div className="text-gray-400 text-xs uppercase tracking-wide mb-1">{label}</div>
+      <div className={`text-lg font-mono font-bold ${color}`}>{value}</div>
+      <div className="text-gray-500 text-xs mt-0.5">{sub}</div>
     </div>
   );
 }

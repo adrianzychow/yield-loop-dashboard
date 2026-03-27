@@ -7,6 +7,7 @@ import AssetTabs from "@/components/AssetTabs";
 import SummaryTable from "@/components/SummaryTable";
 import AssetDetail from "@/components/AssetDetail";
 import LoopingCalculator from "@/components/LoopingCalculator";
+import FlashLoanBuilder from "@/components/FlashLoanBuilder";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("Overview");
@@ -56,14 +57,24 @@ export default function Home() {
         />
       )}
 
+      {!isLoading && activeTab === "Flash Loan" && (
+        <FlashLoanBuilder
+          strategies={strategies}
+          morphoMarkets={morphoMarkets}
+          borrowPools={borrowPools}
+        />
+      )}
+
       {!isLoading &&
         activeTab !== "Overview" &&
         activeTab !== "Calculator" &&
+        activeTab !== "Flash Loan" &&
         activeStrategy && <AssetDetail strategy={activeStrategy} morphoMarkets={morphoMarkets} />}
 
       {!isLoading &&
         activeTab !== "Overview" &&
         activeTab !== "Calculator" &&
+        activeTab !== "Flash Loan" &&
         !activeStrategy && (
           <div className="text-center text-gray-500 py-12">
             No data found for {activeTab}

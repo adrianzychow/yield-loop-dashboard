@@ -127,6 +127,7 @@ export function getMorphoBorrowMarkets(
       borrowAsset: m.loanAsset.symbol,
       borrowRate,
       liquidity,
+      utilization: m.state.utilization ?? null,
       link: getMorphoLink(
         m.uniqueKey,
         m.collateralAsset.symbol,

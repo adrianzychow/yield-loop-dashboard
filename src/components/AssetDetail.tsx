@@ -43,6 +43,7 @@ export default function AssetDetail({ strategy, morphoMarkets }: AssetDetailProp
               <th className="px-4 py-3 font-medium">Venue</th>
               <th className="px-4 py-3 font-medium">Pair</th>
               <th className="px-4 py-3 font-medium">Borrow Rate</th>
+              <th className="px-4 py-3 font-medium">Utilization</th>
               <th className="px-4 py-3 font-medium">Available Liquidity</th>
               <th className="px-4 py-3 font-medium">Link</th>
             </tr>
@@ -66,6 +67,9 @@ export default function AssetDetail({ strategy, morphoMarkets }: AssetDetailProp
                   <td className="px-4 py-3 text-gray-300 font-mono">{m.pair}</td>
                   <td className="px-4 py-3 font-mono text-amber-400">
                     {formatPct(m.borrowRate)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <UtilizationCell value={m.utilization ?? null} />
                   </td>
                   <td className="px-4 py-3 font-mono text-gray-300">
                     {formatUsd(m.liquidity)}
@@ -93,6 +97,28 @@ export default function AssetDetail({ strategy, morphoMarkets }: AssetDetailProp
       </div>
 
       <HistoricalCharts asset={asset} morphoMarkets={morphoMarkets} />
+    </div>
+  );
+}
+
+function UtilizationCell({ value }: { value: number | null }) {
+  if (value === null) return <span className="text-gray-500 text-sm">N/A</span>;
+  const pct = value * 100;
+  const color =
+    pct >= 90 ? "bg-red-500" : pct >= 75 ? "bg-amber-500" : "bg-emerald-500";
+  const textColor =
+    pct >= 90 ? "text-red-400" : pct >= 75 ? "text-amber-400" : "text-emerald-400";
+  return (
+    <div className="flex items-center gap-2 min-w-[100px]">
+      <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full ${color}`}
+          style={{ width: `${Math.min(pct, 100)}%` }}
+        />
+      </div>
+      <span className={`font-mono text-sm tabular-nums ${textColor}`}>
+        {pct.toFixed(1)}%
+      </span>
     </div>
   );
 }

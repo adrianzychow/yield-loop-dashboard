@@ -84,11 +84,13 @@ export default function BorrowRatesChart({ series, range }: Props) {
               border: "1px solid #374151",
               borderRadius: "8px",
               color: "#e5e7eb",
+              fontSize: 12,
             }}
-            formatter={(value) =>
+            labelStyle={{ color: "#9ca3af", marginBottom: 4 }}
+            formatter={(value, name) =>
               value !== null && value !== undefined
-                ? [`${Number(value).toFixed(2)}%`]
-                : ["N/A"]
+                ? [`${Number(value).toFixed(2)}%`, String(name)]
+                : ["N/A", String(name)]
             }
           />
           <Legend wrapperStyle={{ color: "#9ca3af", fontSize: 12 }} />

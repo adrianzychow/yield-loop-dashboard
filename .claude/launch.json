@@ -4,7 +4,7 @@
     {
       "name": "dev",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/adrianchow/Desktop/yield-loop-dashboard && npx next dev --port 3456"],
+      "runtimeArgs": ["-c", "cd '/Users/fersobrini/Claude projects/yield-loop-dashboard' && npx next dev --port 3456"],
       "port": 3456
     }
   ]

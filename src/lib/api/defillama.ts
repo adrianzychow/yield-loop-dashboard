@@ -105,12 +105,17 @@ export function getAaveBorrowMarkets(
         ? getHorizonLink()
         : getAaveLink(borrowAsset, AAVE_TOKEN_ADDRESSES[borrowAsset] ?? "");
 
+    const totalSupply = pool.totalSupplyUsd ?? 0;
+    const totalBorrow = pool.totalBorrowUsd ?? 0;
+    const utilization = totalSupply > 0 ? totalBorrow / totalSupply : null;
+
     markets.push({
       venue,
       pair: `${assetName}/${borrowAsset}`,
       borrowAsset,
       borrowRate: effectiveRate,
       liquidity: Math.max(0, liquidity),
+      utilization,
       link,
     });
   }

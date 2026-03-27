@@ -28,6 +28,7 @@ export interface BorrowMarket {
   borrowRate: number;
   liquidity: number;
   link: string;
+  utilization?: number | null; // 0-1 decimal
 }
 
 export interface StrategyRow {

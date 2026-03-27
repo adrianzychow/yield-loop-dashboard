@@ -8,6 +8,23 @@ interface SummaryTableProps {
   onRowClick: (assetName: string) => void;
 }
 
+function UtilizationCell({ value }: { value: number | null }) {
+  if (value === null) return <span className="text-gray-500 text-sm">N/A</span>;
+  const pct = value * 100;
+  const barColor =
+    pct >= 90 ? "bg-red-500" : pct >= 75 ? "bg-amber-500" : "bg-emerald-500";
+  const textColor =
+    pct >= 90 ? "text-red-400" : pct >= 75 ? "text-amber-400" : "text-emerald-400";
+  return (
+    <div className="flex items-center gap-2 min-w-[100px]">
+      <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+      <span className={`font-mono text-sm tabular-nums ${textColor}`}>{pct.toFixed(1)}%</span>
+    </div>
+  );
+}
+
 function PctCell({ value, positive }: { value: number | null; positive?: boolean }) {
   if (value === null) return <td className="px-4 py-3 text-gray-500">N/A</td>;
   const color =
@@ -33,6 +50,7 @@ export default function SummaryTable({ strategies, onRowClick }: SummaryTablePro
             <th className="px-4 py-3 font-medium">Borrow Cost</th>
             <th className="px-4 py-3 font-medium">Borrow Liquidity</th>
             <th className="px-4 py-3 font-medium">Borrow Venue</th>
+            <th className="px-4 py-3 font-medium">Utilization</th>
             <th className="px-4 py-3 font-medium">Spread</th>
             <th className="px-4 py-3 font-medium">Net 3x</th>
             <th className="px-4 py-3 font-medium">Net 5x</th>
@@ -61,6 +79,9 @@ export default function SummaryTable({ strategies, onRowClick }: SummaryTablePro
                 {row.bestBorrow
                   ? `${row.bestBorrow.venue} (${row.bestBorrow.borrowAsset})`
                   : "N/A"}
+              </td>
+              <td className="px-4 py-3">
+                <UtilizationCell value={row.bestBorrow?.utilization ?? null} />
               </td>
               <PctCell value={row.spread} positive />
               <PctCell value={row.net3x} positive />
