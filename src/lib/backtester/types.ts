@@ -8,12 +8,14 @@
 export interface HourlyDataPoint {
   timestamp: number; // Unix seconds
   blockNumber: number;
-  // Oracle components
+  // Oracle components (on-chain Chainlink)
   exchangeRate: number; // sUSDS → USDS (decimal, e.g., 1.05 means 1 sUSDS = 1.05 USDS)
-  basePrice: number; // USDS/USD from CoinGecko
-  quotePrice: number; // USDT/USD from CoinGecko
+  basePrice: number; // DAI/USD from Chainlink (BASE_FEED_1)
+  quotePrice: number; // USDT/USD from Chainlink (QUOTE_FEED_1)
   // Computed oracle price
   oraclePrice: number; // (exchangeRate × basePrice) / quotePrice
+  // Off-chain comparison
+  coingeckoPrice: number; // CoinGecko sUSDS/USD for oracle deviation analysis
   // Market data
   borrowApy: number; // Morpho borrow APY (decimal, e.g., 0.03 = 3%)
 }
@@ -21,8 +23,9 @@ export interface HourlyDataPoint {
 /** Raw fetched data before alignment */
 export interface RawHistoricalData {
   exchangeRates: { timestamp: number; blockNumber: number; rate: number }[];
-  basePrices: { timestamp: number; price: number }[]; // USDS/USD
-  quotePrices: { timestamp: number; price: number }[]; // USDT/USD
+  basePrices: { timestamp: number; price: number }[]; // DAI/USD Chainlink
+  quotePrices: { timestamp: number; price: number }[]; // USDT/USD Chainlink
+  coingeckoPrices: { timestamp: number; price: number }[]; // sUSDS/USD CoinGecko
   borrowRates: { timestamp: number; rate: number }[]; // Morpho APY decimal
 }
 

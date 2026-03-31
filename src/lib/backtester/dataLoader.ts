@@ -2,17 +2,70 @@
  * Data loader for backtester.
  * Fetches and aligns all historical data to hourly time series.
  *
- * Data sources (all on-chain via archive node RPC):
- * - sUSDS exchange rate: convertToAssets(1e18) on sUSDS vault
- * - DAI/USD price: Chainlink aggregator 0xAed0c384... (BASE_FEED_1 from oracle)
- * - USDT/USD price: Chainlink aggregator 0x3E7d1eAB... (QUOTE_FEED_1 from oracle)
+ * Data sources:
+ * - sUSDS exchange rate: Archive node RPC (convertToAssets at hourly blocks)
+ * - DAI/USD price: Chainlink aggregator on-chain (BASE_FEED_1 from oracle)
+ * - USDT/USD price: Chainlink aggregator on-chain (QUOTE_FEED_1 from oracle)
+ * - sUSDS/USD off-chain price: CoinGecko (for oracle deviation analysis only)
  * - Borrow APY: Morpho GraphQL API (interval: HOUR)
- * - Oracle price: Computed from components per MorphoChainlinkOracleV2 logic
+ * - Oracle price: Computed from on-chain components per MorphoChainlinkOracleV2
  */
 
 import type { HourlyDataPoint, RawHistoricalData } from "./types";
 
 const MORPHO_API = "https://blue-api.morpho.org/graphql";
+
+// ── CoinGecko (off-chain comparison only) ───────────────────────────
+
+/**
+ * Fetch hourly sUSDS prices from CoinGecko in 90-day chunks.
+ * Used only for oracle vs off-chain deviation analysis, NOT for the oracle itself.
+ */
+async function fetchCoinGeckoHourly(
+  cgId: string,
+  startTimestamp: number,
+  endTimestamp: number
+): Promise<{ timestamp: number; price: number }[]> {
+  const CHUNK_DAYS = 89;
+  const CHUNK_SECONDS = CHUNK_DAYS * 86400;
+  const allPrices: { timestamp: number; price: number }[] = [];
+
+  let from = startTimestamp;
+  while (from < endTimestamp) {
+    const to = Math.min(from + CHUNK_SECONDS, endTimestamp);
+    const url = `https://api.coingecko.com/api/v3/coins/${cgId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`;
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        console.warn(`CoinGecko ${cgId} chunk failed: ${res.status}`);
+        from = to;
+        continue;
+      }
+      const json = await res.json();
+      const prices = (json.prices ?? []).map(
+        ([ts, price]: [number, number]) => ({
+          timestamp: Math.floor(ts / 1000),
+          price,
+        })
+      );
+      allPrices.push(...prices);
+    } catch (err) {
+      console.warn(`CoinGecko ${cgId} fetch error:`, err);
+    }
+
+    from = to;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  const byHour = new Map<number, { timestamp: number; price: number }>();
+  for (const p of allPrices) {
+    const hourKey = Math.floor(p.timestamp / 3600) * 3600;
+    byHour.set(hourKey, { timestamp: hourKey, price: p.price });
+  }
+
+  return Array.from(byHour.values()).sort((a, b) => a.timestamp - b.timestamp);
+}
 
 // ── Morpho hourly borrow rates ──────────────────────────────────────
 
@@ -59,7 +112,7 @@ async function fetchMorphoHourlyBorrowRates(
     return points
       .map((p: { x: number; y: number }) => ({
         timestamp: p.x,
-        rate: p.y, // Already a decimal (e.g., 0.03 = 3%)
+        rate: p.y,
       }))
       .sort(
         (a: { timestamp: number }, b: { timestamp: number }) =>
@@ -73,18 +126,11 @@ async function fetchMorphoHourlyBorrowRates(
 
 // ── Data alignment ──────────────────────────────────────────────────
 
-/**
- * Align all raw data series to common hourly timestamps using forward-fill.
- * Since exchange rates and Chainlink prices are all fetched at the same block
- * numbers, they're already aligned — but borrow rates from Morpho API may
- * have different timestamps, so we forward-fill those.
- */
 export function alignToHourlySeries(
   raw: RawHistoricalData,
   startTimestamp: number,
   endTimestamp: number
 ): HourlyDataPoint[] {
-  // Build lookup maps (keyed by hourly timestamp)
   const exchangeMap = new Map<number, { rate: number; block: number }>();
   for (const p of raw.exchangeRates) {
     const hourKey = Math.floor(p.timestamp / 3600) * 3600;
@@ -103,71 +149,53 @@ export function alignToHourlySeries(
     quoteMap.set(hourKey, p.price);
   }
 
+  const cgMap = new Map<number, number>();
+  for (const p of raw.coingeckoPrices) {
+    const hourKey = Math.floor(p.timestamp / 3600) * 3600;
+    cgMap.set(hourKey, p.price);
+  }
+
   const borrowMap = new Map<number, number>();
   for (const p of raw.borrowRates) {
     const hourKey = Math.floor(p.timestamp / 3600) * 3600;
     borrowMap.set(hourKey, p.rate);
   }
 
-  // Find the actual data range
   const allTimestamps = new Set<number>();
   for (const k of exchangeMap.keys()) allTimestamps.add(k);
   for (const k of baseMap.keys()) allTimestamps.add(k);
   for (const k of quoteMap.keys()) allTimestamps.add(k);
   for (const k of borrowMap.keys()) allTimestamps.add(k);
 
-  const minDataTs = Math.max(
-    startTimestamp,
-    Math.min(...Array.from(allTimestamps))
-  );
+  const minDataTs = Math.max(startTimestamp, Math.min(...Array.from(allTimestamps)));
   const maxDataTs = Math.min(endTimestamp, Math.max(...Array.from(allTimestamps)));
 
-  // Generate hourly series with forward-fill
   const result: HourlyDataPoint[] = [];
   let lastExchange = { rate: 0, block: 0 };
   let lastBase = 0;
   let lastQuote = 0;
+  let lastCg = 0;
   let lastBorrow = 0;
 
-  // Initialize from first available data
-  for (const [, v] of exchangeMap) {
-    lastExchange = v;
-    break;
-  }
-  for (const [, v] of baseMap) {
-    lastBase = v;
-    break;
-  }
-  for (const [, v] of quoteMap) {
-    lastQuote = v;
-    break;
-  }
-  for (const [, v] of borrowMap) {
-    lastBorrow = v;
-    break;
-  }
+  for (const [, v] of exchangeMap) { lastExchange = v; break; }
+  for (const [, v] of baseMap) { lastBase = v; break; }
+  for (const [, v] of quoteMap) { lastQuote = v; break; }
+  for (const [, v] of cgMap) { lastCg = v; break; }
+  for (const [, v] of borrowMap) { lastBorrow = v; break; }
 
   for (let ts = minDataTs; ts <= maxDataTs; ts += 3600) {
     const hourKey = Math.floor(ts / 3600) * 3600;
 
-    // Update with actual data if available (forward-fill otherwise)
     if (exchangeMap.has(hourKey)) lastExchange = exchangeMap.get(hourKey)!;
     if (baseMap.has(hourKey)) lastBase = baseMap.get(hourKey)!;
     if (quoteMap.has(hourKey)) lastQuote = quoteMap.get(hourKey)!;
+    if (cgMap.has(hourKey)) lastCg = cgMap.get(hourKey)!;
     if (borrowMap.has(hourKey)) lastBorrow = borrowMap.get(hourKey)!;
 
-    // Skip if we don't have initial data yet
-    if (
-      lastExchange.rate === 0 ||
-      lastBase === 0 ||
-      lastQuote === 0 ||
-      lastBorrow === 0
-    ) {
+    if (lastExchange.rate === 0 || lastBase === 0 || lastQuote === 0 || lastBorrow === 0) {
       continue;
     }
 
-    // Compute oracle price: (exchangeRate × DAI/USD) / USDT/USD
-    // This matches MorphoChainlinkOracleV2 logic exactly
     const oraclePrice =
       lastQuote > 0
         ? (lastExchange.rate * lastBase) / lastQuote
@@ -180,6 +208,7 @@ export function alignToHourlySeries(
       basePrice: lastBase,
       quotePrice: lastQuote,
       oraclePrice,
+      coingeckoPrice: lastCg > 0 ? lastCg : oraclePrice, // fallback to oracle if CG missing
       borrowApy: lastBorrow,
     });
   }
@@ -187,12 +216,8 @@ export function alignToHourlySeries(
   return result;
 }
 
-// ── Main loader (client-side, calls API route) ──────────────────────
+// ── Client-side fetcher ─────────────────────────────────────────────
 
-/**
- * Fetch all backtester data via the API route.
- * This is called from the browser; the heavy RPC work happens server-side.
- */
 export async function fetchBacktestData(
   marketUniqueKey: string,
   collateralAsset: string,
@@ -223,18 +248,8 @@ export async function fetchBacktestData(
   return json.data as HourlyDataPoint[];
 }
 
-// ── Server-side loader (used by API route) ──────────────────────────
+// ── Server-side loader ──────────────────────────────────────────────
 
-/**
- * Server-side: fetch all raw data and align to hourly series.
- * Called from the Next.js API route where we have access to RPC.
- *
- * All price data is sourced directly on-chain:
- * - sUSDS exchange rate: vault.convertToAssets(1e18) at each block
- * - DAI/USD: Chainlink BASE_FEED_1 latestRoundData at each block
- * - USDT/USD: Chainlink QUOTE_FEED_1 latestRoundData at each block
- * - Borrow APY: Morpho GraphQL API (only off-chain source)
- */
 export async function loadBacktestDataServer(
   rpcUrl: string,
   marketUniqueKey: string,
@@ -257,69 +272,46 @@ export async function loadBacktestDataServer(
     `[Backtest] Loading data from ${new Date(startTimestamp * 1000).toISOString()} to ${new Date(endTimestamp * 1000).toISOString()}`
   );
 
-  // Step 1: Resolve hourly block numbers (fast — only 2 binary searches)
+  // Step 1: Resolve hourly block numbers
   console.log("[Backtest] Resolving hourly blocks...");
-  const hourlyBlocks = await resolveHourlyBlocks(
-    client,
-    startTimestamp,
-    endTimestamp
-  );
+  const hourlyBlocks = await resolveHourlyBlocks(client, startTimestamp, endTimestamp);
   console.log(`[Backtest] Resolved ${hourlyBlocks.length} blocks`);
 
-  // Step 2: Fetch all on-chain data in parallel + Morpho borrow rates
-  console.log("[Backtest] Fetching on-chain data (exchange rates + Chainlink feeds) and Morpho borrow rates...");
-  const [exchangeRates, chainlinkBase, chainlinkQuote, borrowRates] =
+  // Step 2: Fetch all data in parallel
+  console.log("[Backtest] Fetching on-chain data + CoinGecko comparison + Morpho borrow rates...");
+  const [exchangeRates, chainlinkBase, chainlinkQuote, coingeckoPrices, borrowRates] =
     await Promise.all([
-      // sUSDS → USDS exchange rate from vault contract
       batchGetExchangeRates(client, vaultAddress, hourlyBlocks),
-      // DAI/USD from Chainlink (BASE_FEED_1 of the oracle)
       batchGetChainlinkPrices(client, BASE_FEED, hourlyBlocks),
-      // USDT/USD from Chainlink (QUOTE_FEED_1 of the oracle)
       batchGetChainlinkPrices(client, QUOTE_FEED, hourlyBlocks),
-      // Morpho borrow APY (only off-chain data source)
-      fetchMorphoHourlyBorrowRates(
-        marketUniqueKey,
-        startTimestamp,
-        endTimestamp
-      ),
+      // CoinGecko sUSDS price for deviation analysis
+      fetchCoinGeckoHourly("susds", startTimestamp, endTimestamp),
+      fetchMorphoHourlyBorrowRates(marketUniqueKey, startTimestamp, endTimestamp),
     ]);
 
   console.log(
-    `[Backtest] Raw data: ${exchangeRates.length} exchange rates, ${chainlinkBase.length} DAI/USD prices, ${chainlinkQuote.length} USDT/USD prices, ${borrowRates.length} borrow rates`
+    `[Backtest] Raw data: ${exchangeRates.length} exchange rates, ${chainlinkBase.length} DAI/USD, ${chainlinkQuote.length} USDT/USD, ${coingeckoPrices.length} CoinGecko, ${borrowRates.length} borrow rates`
   );
 
-  // Step 3: Convert Chainlink results to the expected format
-  const basePrices = chainlinkBase.map((p) => ({
-    timestamp: p.timestamp,
-    price: p.price,
-  }));
-  const quotePrices = chainlinkQuote.map((p) => ({
-    timestamp: p.timestamp,
-    price: p.price,
-  }));
+  const basePrices = chainlinkBase.map((p) => ({ timestamp: p.timestamp, price: p.price }));
+  const quotePrices = chainlinkQuote.map((p) => ({ timestamp: p.timestamp, price: p.price }));
 
-  // Step 4: Align to hourly series
   const raw: RawHistoricalData = {
     exchangeRates,
     basePrices,
     quotePrices,
+    coingeckoPrices,
     borrowRates,
   };
 
   const aligned = alignToHourlySeries(raw, startTimestamp, endTimestamp);
-
   const expectedHours = Math.floor((endTimestamp - startTimestamp) / 3600);
   const dataGaps = Math.max(0, expectedHours - aligned.length);
 
-  console.log(
-    `[Backtest] Aligned ${aligned.length} hourly points, ${dataGaps} gaps`
-  );
+  console.log(`[Backtest] Aligned ${aligned.length} hourly points, ${dataGaps} gaps`);
 
   return {
     data: aligned,
-    metadata: {
-      totalPoints: aligned.length,
-      dataGaps,
-    },
+    metadata: { totalPoints: aligned.length, dataGaps },
   };
 }
