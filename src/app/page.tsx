@@ -8,6 +8,7 @@ import SummaryTable from "@/components/SummaryTable";
 import AssetDetail from "@/components/AssetDetail";
 import LoopingCalculator from "@/components/LoopingCalculator";
 import FlashLoanBuilder from "@/components/FlashLoanBuilder";
+import Backtester from "@/components/Backtester";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("Overview");
@@ -65,16 +66,22 @@ export default function Home() {
         />
       )}
 
+      {!isLoading && activeTab === "Backtester" && (
+        <Backtester morphoMarkets={morphoMarkets} />
+      )}
+
       {!isLoading &&
         activeTab !== "Overview" &&
         activeTab !== "Calculator" &&
         activeTab !== "Flash Loan" &&
+        activeTab !== "Backtester" &&
         activeStrategy && <AssetDetail strategy={activeStrategy} morphoMarkets={morphoMarkets} />}
 
       {!isLoading &&
         activeTab !== "Overview" &&
         activeTab !== "Calculator" &&
         activeTab !== "Flash Loan" &&
+        activeTab !== "Backtester" &&
         !activeStrategy && (
           <div className="text-center text-gray-500 py-12">
             No data found for {activeTab}

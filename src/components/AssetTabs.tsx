@@ -9,7 +9,7 @@ interface AssetTabsProps {
 
 export default function AssetTabs({ activeTab, onTabChange }: AssetTabsProps) {
   const assetTabs = ASSETS.map((a) => a.name);
-  const specialTabs = ["Overview", "Calculator", "Flash Loan"];
+  const specialTabs = ["Overview", "Calculator", "Flash Loan", "Backtester"];
 
   const getTabStyle = (tab: string) => {
     if (tab === "Calculator") {
@@ -21,6 +21,11 @@ export default function AssetTabs({ activeTab, onTabChange }: AssetTabsProps) {
       return activeTab === tab
         ? "bg-sky-600 text-white px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-colors"
         : "bg-sky-900/30 text-sky-300 hover:bg-sky-800/50 hover:text-sky-100 px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-colors";
+    }
+    if (tab === "Backtester") {
+      return activeTab === tab
+        ? "bg-amber-600 text-white px-5 py-2.5 text-base font-semibold rounded-lg whitespace-nowrap transition-colors"
+        : "bg-amber-900/40 text-amber-300 hover:bg-amber-800/60 hover:text-amber-100 px-5 py-2.5 text-base font-semibold rounded-lg whitespace-nowrap transition-colors";
     }
     return activeTab === tab
       ? "bg-emerald-600 text-white px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-colors"
