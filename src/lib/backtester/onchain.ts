@@ -1,6 +1,8 @@
 /**
  * On-chain data fetching for backtester.
- * Uses viem to query archive node for historical sUSDS exchange rates.
+ * Uses viem to query archive node for historical sUSDS exchange rates
+ * and Chainlink price feeds (DAI/USD, USDT/USD) — matching the exact
+ * data sources used by the MorphoChainlinkOracleV2 on-chain.
  */
 
 import {
@@ -24,10 +26,16 @@ const CHAINLINK_ABI = parseAbi([
 ]);
 
 // ── Known addresses ─────────────────────────────────────────────────
+// Read directly from the MorphoChainlinkOracleV2 at 0x0C426d...
 
 export const SUSDS_VAULT = "0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD" as const;
-export const USDS_USD_FEED = "0xfF30586cD0F29eD462364C7e81375FC0C71219b1" as const;
-export const USDT_USD_FEED = "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D" as const;
+
+// BASE_FEED_1: DAI/USD Chainlink aggregator (oracle uses DAI/USD, not USDS/USD)
+export const BASE_FEED = "0xAed0c38402a5d19df6E4c03F4E2DceD6e29c1ee9" as const;
+// QUOTE_FEED_1: USDT/USD Chainlink aggregator
+export const QUOTE_FEED = "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D" as const;
+// Both feeds: 8 decimals
+const CHAINLINK_DECIMALS = 8;
 
 // Morpho oracle for reference
 export const MORPHO_ORACLE = "0x0C426d174FC88B7A25d59945Ab2F7274Bf7B4C79" as const;
@@ -206,6 +214,89 @@ export async function batchGetExchangeRates(
 
   // Interpolate any failed points
   return interpolateFailedPoints(results);
+}
+
+// ── Chainlink price feed queries ────────────────────────────────────
+
+/**
+ * Fetch a Chainlink price feed answer at a specific block.
+ * Returns price as a float (e.g., 0.9997 for DAI/USD).
+ */
+export async function getChainlinkPriceAtBlock(
+  client: PublicClient,
+  feedAddress: string,
+  blockNumber: number
+): Promise<number> {
+  const result = await client.readContract({
+    address: feedAddress as `0x${string}`,
+    abi: CHAINLINK_ABI,
+    functionName: "latestRoundData",
+    blockNumber: BigInt(blockNumber),
+  });
+  // result is [roundId, answer, startedAt, updatedAt, answeredInRound]
+  const answer = (result as readonly [bigint, bigint, bigint, bigint, bigint])[1];
+  return Number(answer) / 10 ** CHAINLINK_DECIMALS;
+}
+
+/**
+ * Batch fetch Chainlink prices at multiple blocks for a given feed.
+ */
+export async function batchGetChainlinkPrices(
+  client: PublicClient,
+  feedAddress: string,
+  blocks: { timestamp: number; blockNumber: number }[]
+): Promise<{ timestamp: number; blockNumber: number; price: number }[]> {
+  const results: { timestamp: number; blockNumber: number; price: number }[] = [];
+  const BATCH_SIZE = 15;
+
+  for (let i = 0; i < blocks.length; i += BATCH_SIZE) {
+    const batch = blocks.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async ({ timestamp, blockNumber }) => {
+        try {
+          const price = await getChainlinkPriceAtBlock(
+            client,
+            feedAddress,
+            blockNumber
+          );
+          return { timestamp, blockNumber, price };
+        } catch (err) {
+          console.warn(
+            `Failed to get Chainlink price at block ${blockNumber}:`,
+            err
+          );
+          return { timestamp, blockNumber, price: -1 };
+        }
+      })
+    );
+    results.push(...batchResults);
+
+    if (i + BATCH_SIZE < blocks.length) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+
+  // Forward-fill failed points
+  return interpolateFailedPricePoints(results);
+}
+
+/**
+ * Forward-fill any points that failed to fetch (price === -1).
+ */
+function interpolateFailedPricePoints(
+  points: { timestamp: number; blockNumber: number; price: number }[]
+): { timestamp: number; blockNumber: number; price: number }[] {
+  let lastGood = -1;
+  for (const point of points) {
+    if (point.price > 0) lastGood = point.price;
+    else if (lastGood > 0) point.price = lastGood;
+  }
+  lastGood = -1;
+  for (let i = points.length - 1; i >= 0; i--) {
+    if (points[i].price > 0) lastGood = points[i].price;
+    else if (lastGood > 0) points[i].price = lastGood;
+  }
+  return points.filter((p) => p.price > 0);
 }
 
 /**
