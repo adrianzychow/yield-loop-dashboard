@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import type {
   BacktestConfig,
   BacktestResult,
@@ -15,37 +15,28 @@ import { runCapacityAnalysis } from "@/lib/backtester/capacity";
 import { analyzeExitSignals } from "@/lib/backtester/exitSignals";
 import { loadBacktestDataClient, type LoadProgress } from "@/lib/backtester/dataLoader";
 
-interface UseBacktestOptions {
-  marketUniqueKey: string;
-  collateralAsset: string;
-  borrowAsset: string;
-  vaultAddress: string;
-  startTimestamp: number;
-  endTimestamp: number;
-}
-
 interface UseBacktestReturn {
-  // Data state
   data: HourlyDataPoint[] | null;
   isLoadingData: boolean;
   dataError: string | null;
   loadProgress: LoadProgress | null;
-  // Backtest
+  // Imperative load trigger
+  loadData: (opts: {
+    marketUniqueKey: string;
+    vaultAddress: string;
+    startTimestamp: number;
+    endTimestamp: number;
+  }) => void;
   backtestResult: BacktestResult | null;
   runSingleBacktest: (config: BacktestConfig) => void;
-  // Optimization
   optimizationResult: OptimizationResult | null;
   isOptimizing: boolean;
   runOptimize: (config: Omit<BacktestConfig, "ltv" | "leverage">) => void;
-  // Capacity
   capacityResult: CapacityResult | null;
-  // Exit signals
   exitAnalysis: ExitAnalysisResult | null;
 }
 
-export function useBacktest(
-  options: UseBacktestOptions | null
-): UseBacktestReturn {
+export function useBacktest(): UseBacktestReturn {
   const [data, setData] = useState<HourlyDataPoint[] | null>(null);
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
@@ -57,70 +48,56 @@ export function useBacktest(
   const [capacityResult, setCapacityResult] = useState<CapacityResult | null>(null);
   const [exitAnalysis, setExitAnalysis] = useState<ExitAnalysisResult | null>(null);
 
-  // Track current load to avoid duplicate fetches
-  const loadKeyRef = useRef<string | null>(null);
+  const loadedKeyRef = useRef<string | null>(null);
+  const loadingRef = useRef(false);
 
-  // Load data client-side when options change
-  useEffect(() => {
-    if (!options) {
-      setData(null);
-      setDataError(null);
-      setLoadProgress(null);
-      return;
-    }
-
+  // Imperative data loader — no useEffect, no StrictMode issues
+  const loadData = useCallback((opts: {
+    marketUniqueKey: string;
+    vaultAddress: string;
+    startTimestamp: number;
+    endTimestamp: number;
+  }) => {
     const rpcUrl = process.env.NEXT_PUBLIC_ETH_RPC_URL;
     if (!rpcUrl) {
       setDataError("NEXT_PUBLIC_ETH_RPC_URL not configured");
       return;
     }
 
-    const loadKey = `${options.marketUniqueKey}-${options.startTimestamp}-${options.endTimestamp}`;
-    if (loadKeyRef.current === loadKey && data && data.length > 0) {
-      return; // Already loaded this exact data
+    const loadKey = `${opts.marketUniqueKey}-${opts.startTimestamp}-${opts.endTimestamp}`;
+
+    // Skip if already loaded or currently loading
+    if (loadedKeyRef.current === loadKey || loadingRef.current) {
+      return;
     }
 
-    let cancelled = false;
-    loadKeyRef.current = loadKey;
+    loadingRef.current = true;
+    setIsLoadingData(true);
+    setDataError(null);
+    setLoadProgress({ stage: "blocks", message: "Starting...", percent: 0 });
 
-    const doLoad = async () => {
-      setIsLoadingData(true);
-      setDataError(null);
-      setLoadProgress({ stage: "blocks", message: "Starting...", percent: 0 });
-
-      try {
-        const result = await loadBacktestDataClient(
-          rpcUrl,
-          options.marketUniqueKey,
-          options.vaultAddress,
-          options.startTimestamp,
-          options.endTimestamp,
-          (progress) => {
-            if (!cancelled) setLoadProgress(progress);
-          }
-        );
-
-        if (!cancelled) {
-          setData(result);
-          setIsLoadingData(false);
-          setLoadProgress(null);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setDataError(err instanceof Error ? err.message : "Failed to load data");
-          setIsLoadingData(false);
-          setLoadProgress(null);
-        }
-      }
-    };
-
-    doLoad();
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options?.marketUniqueKey, options?.startTimestamp, options?.endTimestamp, options?.vaultAddress]);
+    loadBacktestDataClient(
+      rpcUrl,
+      opts.marketUniqueKey,
+      opts.vaultAddress,
+      opts.startTimestamp,
+      opts.endTimestamp,
+      (progress) => setLoadProgress(progress)
+    )
+      .then((result) => {
+        setData(result);
+        setIsLoadingData(false);
+        setLoadProgress(null);
+        loadedKeyRef.current = loadKey;
+        loadingRef.current = false;
+      })
+      .catch((err) => {
+        setDataError(err instanceof Error ? err.message : "Failed to load data");
+        setIsLoadingData(false);
+        setLoadProgress(null);
+        loadingRef.current = false;
+      });
+  }, []);
 
   // Run single backtest
   const runSingleBacktest = useCallback(
@@ -130,7 +107,6 @@ export function useBacktest(
       const result = runBacktest(config, data);
       setBacktestResult(result);
 
-      // Also run exit signal analysis
       const first = data[0];
       const last = data[data.length - 1];
       const hoursElapsed = data.length;
@@ -196,6 +172,7 @@ export function useBacktest(
     isLoadingData,
     dataError,
     loadProgress,
+    loadData,
     backtestResult,
     runSingleBacktest,
     optimizationResult,

@@ -49,8 +49,6 @@ interface BacktesterProps {
 
 export default function Backtester({ morphoMarkets }: BacktesterProps) {
   const [selectedMarketIdx, setSelectedMarketIdx] = useState(0);
-  const [backtestDays, setBacktestDays] = useState(90);
-  const [hasStarted, setHasStarted] = useState(false);
 
   // Strategy params state (persisted for Margin for Error)
   const [params, setParams] = useState({
@@ -73,26 +71,12 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
   const marketUniqueKey = resolvedMarket?.uniqueKey ?? "";
   const liquidationLtv = resolvedMarket ? Number(resolvedMarket.lltv) / 1e18 : 0.86;
 
-  const now = Math.floor(Date.now() / 1000);
-  const startTimestamp = now - backtestDays * 86400;
-
   const {
-    data, isLoadingData, dataError, loadProgress,
+    data, isLoadingData, dataError, loadProgress, loadData,
     backtestResult, runSingleBacktest,
     optimizationResult, isOptimizing, runOptimize,
     capacityResult, exitAnalysis,
-  } = useBacktest(
-    hasStarted && marketUniqueKey
-      ? {
-          marketUniqueKey,
-          collateralAsset: selectedOption.collateralAsset,
-          borrowAsset: selectedOption.borrowAsset,
-          vaultAddress: selectedOption.vaultAddress,
-          startTimestamp,
-          endTimestamp: now,
-        }
-      : null
-  );
+  } = useBacktest();
 
   // Track pending params so we can auto-run when data loads
   const pendingParams = useRef<{
@@ -106,15 +90,8 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
       liquidationLtv: number; startTimestamp: number; endTimestamp: number;
     }) => {
       setParams({ startingCapital: p.startingCapital, ltv: p.ltv, leverage: p.leverage });
-      setBacktestDays(Math.round((p.endTimestamp - p.startTimestamp) / 86400));
 
-      if (!hasStarted) {
-        setHasStarted(true);
-        pendingParams.current = p;
-        return; // data will start loading, auto-run on complete
-      }
-
-      // Data already loaded — run immediately
+      // If data is loaded, run immediately
       if (data && data.length > 0) {
         runSingleBacktest({
           marketUniqueKey,
@@ -124,10 +101,17 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
         });
         pendingParams.current = null;
       } else {
+        // Data not loaded yet — trigger load and save params for auto-run
         pendingParams.current = p;
+        loadData({
+          marketUniqueKey,
+          vaultAddress: selectedOption.vaultAddress,
+          startTimestamp: p.startTimestamp,
+          endTimestamp: p.endTimestamp,
+        });
       }
     },
-    [data, hasStarted, marketUniqueKey, selectedOption, runSingleBacktest]
+    [data, marketUniqueKey, selectedOption, runSingleBacktest, loadData]
   );
 
   // Auto-run when data finishes loading
@@ -158,7 +142,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
             <label className="block text-sm text-gray-400 mb-1">Market</label>
             <select
               value={selectedMarketIdx}
-              onChange={(e) => { setSelectedMarketIdx(Number(e.target.value)); setHasStarted(false); }}
+              onChange={(e) => setSelectedMarketIdx(Number(e.target.value))}
               className="bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm min-w-[250px]"
             >
               {MARKET_OPTIONS.map((opt, i) => (

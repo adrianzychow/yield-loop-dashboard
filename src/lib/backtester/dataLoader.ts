@@ -52,10 +52,12 @@ async function fetchCoinGeckoHourly(
   let from = startTimestamp;
   while (from < endTimestamp) {
     const to = Math.min(from + CHUNK_SECONDS, endTimestamp);
-    const url = `https://api.coingecko.com/api/v3/coins/${cgId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`;
+    const cgUrl = `https://api.coingecko.com/api/v3/coins/${cgId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`;
+    // Proxy through our API route to avoid CoinGecko CORS block in browser
+    const proxyUrl = `/api/backtest?cgUrl=${encodeURIComponent(cgUrl)}`;
 
     try {
-      const res = await fetch(url);
+      const res = await fetch(proxyUrl);
       if (!res.ok) {
         console.warn(`CoinGecko ${cgId} chunk failed: ${res.status}`);
         from = to;
