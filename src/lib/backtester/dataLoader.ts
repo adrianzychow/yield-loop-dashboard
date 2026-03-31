@@ -1,9 +1,9 @@
 /**
- * Data loader for backtester.
- * Fetches and aligns all historical data to hourly time series.
+ * Data loader for backtester — CLIENT-SIDE version.
+ * Fetches all data directly from the browser to avoid Vercel serverless timeouts.
  *
  * Data sources:
- * - sUSDS exchange rate: Archive node RPC (convertToAssets at hourly blocks)
+ * - sUSDS exchange rate: Archive node RPC via viem (convertToAssets at blocks)
  * - DAI/USD price: Chainlink aggregator on-chain (BASE_FEED_1 from oracle)
  * - USDT/USD price: Chainlink aggregator on-chain (QUOTE_FEED_1 from oracle)
  * - sUSDS/USD off-chain price: CoinGecko (for oracle deviation analysis only)
@@ -12,15 +12,34 @@
  */
 
 import type { HourlyDataPoint, RawHistoricalData } from "./types";
+import {
+  getClient,
+  resolveHourlyBlocks,
+  batchGetOracleSnapshots,
+  type OracleSnapshot,
+} from "./onchain";
 
 const MORPHO_API = "https://blue-api.morpho.org/graphql";
 
+// ── Progress callback type ──────────────────────────────────────────
+
+export type LoadProgress = {
+  stage: "blocks" | "onchain" | "coingecko" | "morpho" | "aligning" | "done";
+  message: string;
+  percent: number;
+};
+
+// ── Adaptive interval based on date range ───────────────────────────
+
+function getIntervalSeconds(daysBack: number): number {
+  if (daysBack <= 14) return 3600;      // hourly for ≤14 days
+  if (daysBack <= 45) return 3600 * 2;  // 2-hourly for ≤45 days
+  if (daysBack <= 90) return 3600 * 4;  // 4-hourly for ≤90 days
+  return 3600 * 6;                       // 6-hourly for >90 days
+}
+
 // ── CoinGecko (off-chain comparison only) ───────────────────────────
 
-/**
- * Fetch hourly sUSDS prices from CoinGecko in 90-day chunks.
- * Used only for oracle vs off-chain deviation analysis, NOT for the oracle itself.
- */
 async function fetchCoinGeckoHourly(
   cgId: string,
   startTimestamp: number,
@@ -55,7 +74,9 @@ async function fetchCoinGeckoHourly(
     }
 
     from = to;
-    await new Promise((r) => setTimeout(r, 1500));
+    if (from < endTimestamp) {
+      await new Promise((r) => setTimeout(r, 1500));
+    }
   }
 
   const byHour = new Map<number, { timestamp: number; price: number }>();
@@ -129,7 +150,8 @@ async function fetchMorphoHourlyBorrowRates(
 export function alignToHourlySeries(
   raw: RawHistoricalData,
   startTimestamp: number,
-  endTimestamp: number
+  endTimestamp: number,
+  intervalSeconds: number = 3600
 ): HourlyDataPoint[] {
   const exchangeMap = new Map<number, { rate: number; block: number }>();
   for (const p of raw.exchangeRates) {
@@ -183,8 +205,19 @@ export function alignToHourlySeries(
   for (const [, v] of cgMap) { lastCg = v; break; }
   for (const [, v] of borrowMap) { lastBorrow = v; break; }
 
-  for (let ts = minDataTs; ts <= maxDataTs; ts += 3600) {
+  for (let ts = minDataTs; ts <= maxDataTs; ts += intervalSeconds) {
+    // For wider intervals, check the nearest hour-aligned key
     const hourKey = Math.floor(ts / 3600) * 3600;
+
+    // Forward-fill: check this timestamp and all hourly keys between previous and current
+    for (let checkTs = ts - intervalSeconds + 3600; checkTs <= ts; checkTs += 3600) {
+      const ck = Math.floor(checkTs / 3600) * 3600;
+      if (exchangeMap.has(ck)) lastExchange = exchangeMap.get(ck)!;
+      if (baseMap.has(ck)) lastBase = baseMap.get(ck)!;
+      if (quoteMap.has(ck)) lastQuote = quoteMap.get(ck)!;
+      if (cgMap.has(ck)) lastCg = cgMap.get(ck)!;
+      if (borrowMap.has(ck)) lastBorrow = borrowMap.get(ck)!;
+    }
 
     if (exchangeMap.has(hourKey)) lastExchange = exchangeMap.get(hourKey)!;
     if (baseMap.has(hourKey)) lastBase = baseMap.get(hourKey)!;
@@ -208,7 +241,7 @@ export function alignToHourlySeries(
       basePrice: lastBase,
       quotePrice: lastQuote,
       oraclePrice,
-      coingeckoPrice: lastCg > 0 ? lastCg : oraclePrice, // fallback to oracle if CG missing
+      coingeckoPrice: lastCg > 0 ? lastCg : oraclePrice,
       borrowApy: lastBorrow,
     });
   }
@@ -216,102 +249,107 @@ export function alignToHourlySeries(
   return result;
 }
 
-// ── Client-side fetcher ─────────────────────────────────────────────
+// ── Client-side loader (runs in the browser) ────────────────────────
 
-export async function fetchBacktestData(
-  marketUniqueKey: string,
-  collateralAsset: string,
-  borrowAsset: string,
-  vaultAddress: string,
-  startTimestamp: number,
-  endTimestamp: number
-): Promise<HourlyDataPoint[]> {
-  const res = await fetch("/api/backtest", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      marketUniqueKey,
-      collateralAsset,
-      borrowAsset,
-      vaultAddress,
-      startTimestamp,
-      endTimestamp,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Backtest data fetch failed: ${err}`);
-  }
-
-  const json = await res.json();
-  return json.data as HourlyDataPoint[];
-}
-
-// ── Server-side loader ──────────────────────────────────────────────
-
-export async function loadBacktestDataServer(
+export async function loadBacktestDataClient(
   rpcUrl: string,
   marketUniqueKey: string,
   vaultAddress: string,
   startTimestamp: number,
-  endTimestamp: number
-): Promise<{ data: HourlyDataPoint[]; metadata: { totalPoints: number; dataGaps: number } }> {
-  const {
-    getClient,
-    resolveHourlyBlocks,
-    batchGetExchangeRates,
-    batchGetChainlinkPrices,
-    BASE_FEED,
-    QUOTE_FEED,
-  } = await import("./onchain");
+  endTimestamp: number,
+  onProgress?: (progress: LoadProgress) => void
+): Promise<HourlyDataPoint[]> {
+  const daysBack = Math.ceil((endTimestamp - startTimestamp) / 86400);
+  const intervalSeconds = getIntervalSeconds(daysBack);
+  const intervalLabel = intervalSeconds === 3600 ? "hourly" : `${intervalSeconds / 3600}h`;
+
+  onProgress?.({
+    stage: "blocks",
+    message: `Resolving ${intervalLabel} blocks for ${daysBack} days...`,
+    percent: 5,
+  });
 
   const client = getClient(rpcUrl);
+  const blocks = await resolveHourlyBlocks(client, startTimestamp, endTimestamp, intervalSeconds);
+
+  console.log(`[Backtest] Resolved ${blocks.length} blocks (${intervalLabel} intervals for ${daysBack}d)`);
+
+  onProgress?.({
+    stage: "onchain",
+    message: `Fetching on-chain data for ${blocks.length} blocks...`,
+    percent: 15,
+  });
+
+  // Fetch all 3 data sources in parallel
+  const [oracleSnapshots, coingeckoPrices, borrowRates] = await Promise.all([
+    // On-chain: oracle snapshots (exchange rate + DAI/USD + USDT/USD per block)
+    (async () => {
+      const snapshots = await batchGetOracleSnapshots(client, vaultAddress, blocks);
+      onProgress?.({
+        stage: "onchain",
+        message: `On-chain data: ${snapshots.length}/${blocks.length} blocks fetched`,
+        percent: 60,
+      });
+      return snapshots;
+    })(),
+    // CoinGecko: off-chain price for deviation analysis
+    (async () => {
+      onProgress?.({
+        stage: "coingecko",
+        message: "Fetching CoinGecko prices...",
+        percent: 20,
+      });
+      return fetchCoinGeckoHourly("susds", startTimestamp, endTimestamp);
+    })(),
+    // Morpho: borrow rates
+    (async () => {
+      onProgress?.({
+        stage: "morpho",
+        message: "Fetching Morpho borrow rates...",
+        percent: 25,
+      });
+      return fetchMorphoHourlyBorrowRates(marketUniqueKey, startTimestamp, endTimestamp);
+    })(),
+  ]);
 
   console.log(
-    `[Backtest] Loading data from ${new Date(startTimestamp * 1000).toISOString()} to ${new Date(endTimestamp * 1000).toISOString()}`
+    `[Backtest] Raw data: ${oracleSnapshots.length} oracle snapshots, ${coingeckoPrices.length} CoinGecko, ${borrowRates.length} borrow rates`
   );
 
-  // Step 1: Resolve hourly block numbers
-  console.log("[Backtest] Resolving hourly blocks...");
-  const hourlyBlocks = await resolveHourlyBlocks(client, startTimestamp, endTimestamp);
-  console.log(`[Backtest] Resolved ${hourlyBlocks.length} blocks`);
+  onProgress?.({
+    stage: "aligning",
+    message: "Aligning data to time series...",
+    percent: 85,
+  });
 
-  // Step 2: Fetch all data in parallel
-  console.log("[Backtest] Fetching on-chain data + CoinGecko comparison + Morpho borrow rates...");
-  const [exchangeRates, chainlinkBase, chainlinkQuote, coingeckoPrices, borrowRates] =
-    await Promise.all([
-      batchGetExchangeRates(client, vaultAddress, hourlyBlocks),
-      batchGetChainlinkPrices(client, BASE_FEED, hourlyBlocks),
-      batchGetChainlinkPrices(client, QUOTE_FEED, hourlyBlocks),
-      // CoinGecko sUSDS price for deviation analysis
-      fetchCoinGeckoHourly("susds", startTimestamp, endTimestamp),
-      fetchMorphoHourlyBorrowRates(marketUniqueKey, startTimestamp, endTimestamp),
-    ]);
-
-  console.log(
-    `[Backtest] Raw data: ${exchangeRates.length} exchange rates, ${chainlinkBase.length} DAI/USD, ${chainlinkQuote.length} USDT/USD, ${coingeckoPrices.length} CoinGecko, ${borrowRates.length} borrow rates`
-  );
-
-  const basePrices = chainlinkBase.map((p) => ({ timestamp: p.timestamp, price: p.price }));
-  const quotePrices = chainlinkQuote.map((p) => ({ timestamp: p.timestamp, price: p.price }));
-
+  // Convert OracleSnapshot[] to the RawHistoricalData format
   const raw: RawHistoricalData = {
-    exchangeRates,
-    basePrices,
-    quotePrices,
+    exchangeRates: oracleSnapshots.map((s: OracleSnapshot) => ({
+      timestamp: s.timestamp,
+      blockNumber: s.blockNumber,
+      rate: s.exchangeRate,
+    })),
+    basePrices: oracleSnapshots.map((s: OracleSnapshot) => ({
+      timestamp: s.timestamp,
+      price: s.basePrice,
+    })),
+    quotePrices: oracleSnapshots.map((s: OracleSnapshot) => ({
+      timestamp: s.timestamp,
+      price: s.quotePrice,
+    })),
     coingeckoPrices,
     borrowRates,
   };
 
-  const aligned = alignToHourlySeries(raw, startTimestamp, endTimestamp);
-  const expectedHours = Math.floor((endTimestamp - startTimestamp) / 3600);
-  const dataGaps = Math.max(0, expectedHours - aligned.length);
+  const aligned = alignToHourlySeries(raw, startTimestamp, endTimestamp, intervalSeconds);
 
-  console.log(`[Backtest] Aligned ${aligned.length} hourly points, ${dataGaps} gaps`);
+  console.log(`[Backtest] Aligned ${aligned.length} data points`);
 
-  return {
-    data: aligned,
-    metadata: { totalPoints: aligned.length, dataGaps },
-  };
+  onProgress?.({
+    stage: "done",
+    message: `Loaded ${aligned.length} data points`,
+    percent: 100,
+  });
+
+  return aligned;
 }

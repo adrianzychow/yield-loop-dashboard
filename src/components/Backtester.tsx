@@ -77,7 +77,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
   const startTimestamp = now - backtestDays * 86400;
 
   const {
-    data, isLoadingData, dataError,
+    data, isLoadingData, dataError, loadProgress,
     backtestResult, runSingleBacktest,
     optimizationResult, isOptimizing, runOptimize,
     capacityResult, exitAnalysis,
@@ -221,13 +221,27 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
       {/* Loading State */}
       {isLoadingData && (
         <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-12 text-center">
-          <div className="animate-pulse">
-            <div className="text-lg text-gray-300 mb-2">Loading historical data...</div>
-            <div className="text-sm text-gray-500">
-              Fetching on-chain data (exchange rates + Chainlink feeds), CoinGecko comparison, and Morpho borrow rates
-            </div>
-            <div className="text-xs text-gray-600 mt-2">This may take 30-60 seconds for the first load</div>
+          <div className="text-lg text-gray-300 mb-3">
+            {loadProgress?.message ?? "Loading historical data..."}
           </div>
+          {loadProgress && (
+            <div className="w-full max-w-md mx-auto">
+              <div className="bg-gray-700 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-amber-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${loadProgress.percent}%` }}
+                />
+              </div>
+              <div className="text-xs text-gray-500 mt-2">
+                {loadProgress.percent}% — {loadProgress.stage}
+              </div>
+            </div>
+          )}
+          {!loadProgress && (
+            <div className="text-sm text-gray-500 animate-pulse">
+              Initializing...
+            </div>
+          )}
         </div>
       )}
 
