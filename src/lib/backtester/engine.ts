@@ -67,10 +67,12 @@ export function runBacktest(
   for (let i = 0; i < series.length; i++) {
     const point = series[i];
 
-    // Accrue hourly interest on debt
+    // Accrue interest on debt based on actual time elapsed since last point
     if (i > 0) {
-      const hourlyRate = point.borrowApy / 8760;
-      debtValue = debtValue * (1 + hourlyRate);
+      const prevPoint = series[i - 1];
+      const hoursStep = (point.timestamp - prevPoint.timestamp) / 3600;
+      const stepRate = point.borrowApy * (hoursStep / 8760);
+      debtValue = debtValue * (1 + stepRate);
     }
 
     // Current collateral value per oracle
@@ -85,12 +87,12 @@ export function runBacktest(
     // Equity
     const equity = collateralValue - debtValue;
 
-    // Returns
+    // Returns — use actual elapsed time, not data point count
     const cumulativeReturn = equity / startingCapital - 1;
-    const hoursElapsed = i + 1;
-    const yearsElapsed = hoursElapsed / 8760;
+    const actualHoursElapsed = (point.timestamp - entry.timestamp) / 3600;
+    const yearsElapsed = actualHoursElapsed / 8760;
     const annualizedReturn =
-      yearsElapsed > 0
+      yearsElapsed > 0.01 // avoid extreme annualization for very short periods
         ? Math.pow(1 + cumulativeReturn, 1 / yearsElapsed) - 1
         : 0;
 
@@ -132,7 +134,7 @@ export function runBacktest(
   return {
     config,
     snapshots,
-    totalHours: series.length,
+    totalHours: Math.round((series[series.length - 1].timestamp - entry.timestamp) / 3600),
     finalEquity: lastSnapshot.equity,
     annualizedReturn: lastSnapshot.annualizedReturn,
     maxDrawdown,

@@ -1,63 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadBacktestDataServer } from "@/lib/backtester/dataLoader";
 
-// In-memory cache for expensive historical data
-const dataCache = new Map<
-  string,
-  { data: unknown; ts: number }
->();
-const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+/**
+ * Proxy for CoinGecko API calls from the client.
+ * CoinGecko's free API blocks browser CORS, so we proxy through the server.
+ */
+export async function GET(req: NextRequest) {
+  const cgUrl = req.nextUrl.searchParams.get("cgUrl");
 
-export async function POST(req: NextRequest) {
+  if (!cgUrl || !cgUrl.startsWith("https://api.coingecko.com/")) {
+    return NextResponse.json({ error: "Invalid CoinGecko URL" }, { status: 400 });
+  }
+
   try {
-    const body = await req.json();
-    const {
-      marketUniqueKey,
-      vaultAddress,
-      startTimestamp,
-      endTimestamp,
-    } = body;
-
-    if (!marketUniqueKey || !vaultAddress || !startTimestamp || !endTimestamp) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
-    }
-
-    const rpcUrl = process.env.ETH_RPC_URL;
-    if (!rpcUrl) {
-      return NextResponse.json(
-        { error: "ETH_RPC_URL not configured" },
-        { status: 500 }
-      );
-    }
-
-    // Check cache
-    const cacheKey = `${marketUniqueKey}-${startTimestamp}-${endTimestamp}`;
-    const cached = dataCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < CACHE_TTL) {
-      return NextResponse.json(cached.data);
-    }
-
-    // Fetch data server-side (heavy RPC + API calls)
-    const result = await loadBacktestDataServer(
-      rpcUrl,
-      marketUniqueKey,
-      vaultAddress,
-      startTimestamp,
-      endTimestamp
-    );
-
-    // Cache the result
-    dataCache.set(cacheKey, { data: result, ts: Date.now() });
-
-    return NextResponse.json(result);
+    const res = await fetch(cgUrl);
+    const data = await res.json();
+    return NextResponse.json(data, {
+      headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=7200" },
+    });
   } catch (err) {
-    console.error("[API /backtest] Error:", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Unknown error" },
-      { status: 500 }
+      { error: err instanceof Error ? err.message : "CoinGecko fetch failed" },
+      { status: 502 }
     );
   }
+}
+
+// Keep POST stub for backwards compatibility
+export async function POST() {
+  return NextResponse.json(
+    { error: "Backtest data is now loaded client-side. Use GET for CoinGecko proxy." },
+    { status: 410 }
+  );
 }

@@ -5,7 +5,9 @@ import { AssetConfig, MorphoMarket, DateRange } from "@/lib/types";
 import { useHistoricalData } from "@/hooks/useHistoricalData";
 import DateRangeToggle from "./charts/DateRangeToggle";
 import PriceChart from "./charts/PriceChart";
+import OraclePriceOverlay from "./charts/OraclePriceOverlay";
 import ApyChart from "./charts/ApyChart";
+import AprSummary from "./charts/AprSummary";
 import BorrowRatesChart from "./charts/BorrowRatesChart";
 
 interface Props {
@@ -17,6 +19,9 @@ export default function HistoricalCharts({ asset, morphoMarkets }: Props) {
   const [range, setRange] = useState<DateRange>("3m");
   const { priceHistory, apyHistory, borrowRateSeries, isLoading } =
     useHistoricalData(asset, morphoMarkets, range);
+
+  // Show oracle overlay only for sUSDS (we have oracle data for it)
+  const showOracleOverlay = asset.name === "sUSDS";
 
   return (
     <div className="mt-8">
@@ -32,16 +37,25 @@ export default function HistoricalCharts({ asset, morphoMarkets }: Props) {
       )}
 
       <div className="grid gap-4">
-        <PriceChart
-          data={priceHistory}
-          range={range}
-          assetName={asset.displayName}
-        />
+        {showOracleOverlay ? (
+          <OraclePriceOverlay
+            coingeckoData={priceHistory}
+            range={range}
+            assetName={asset.displayName}
+          />
+        ) : (
+          <PriceChart
+            data={priceHistory}
+            range={range}
+            assetName={asset.displayName}
+          />
+        )}
         <ApyChart
           data={apyHistory}
           range={range}
           assetName={asset.displayName}
         />
+        <AprSummary apyData={apyHistory} />
         <BorrowRatesChart series={borrowRateSeries} range={range} />
       </div>
     </div>
