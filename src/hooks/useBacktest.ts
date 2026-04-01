@@ -109,11 +109,11 @@ export function useBacktest(): UseBacktestReturn {
 
       const first = data[0];
       const last = data[data.length - 1];
-      const hoursElapsed = data.length;
+      const actualHoursElapsed = (last.timestamp - first.timestamp) / 3600;
       const priceReturn = (last.oraclePrice - first.oraclePrice) / first.oraclePrice;
       const collateralApy =
-        hoursElapsed > 0
-          ? Math.pow(1 + priceReturn, 8760 / hoursElapsed) - 1
+        actualHoursElapsed > 0
+          ? Math.pow(1 + priceReturn, 8760 / actualHoursElapsed) - 1
           : 0;
 
       const exits = analyzeExitSignals(
@@ -148,11 +148,11 @@ export function useBacktest(): UseBacktestReturn {
 
     const first = data[0];
     const last = data[data.length - 1];
-    const hoursElapsed = data.length;
+    const actualHoursElapsed = (last.timestamp - first.timestamp) / 3600;
     const priceReturn = (last.oraclePrice - first.oraclePrice) / first.oraclePrice;
     const collateralApy =
-      hoursElapsed > 0
-        ? Math.pow(1 + priceReturn, 8760 / hoursElapsed) - 1
+      actualHoursElapsed > 0
+        ? Math.pow(1 + priceReturn, 8760 / actualHoursElapsed) - 1
         : 0;
 
     const cap = runCapacityAnalysis(
