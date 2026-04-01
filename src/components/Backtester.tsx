@@ -72,11 +72,22 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
   const liquidationLtv = resolvedMarket ? Number(resolvedMarket.lltv) / 1e18 : 0.86;
 
   const {
-    data, isLoadingData, dataError, loadProgress, loadData,
+    data, isLoadingData, dataError, loadProgress, loadData, setMarketState,
     backtestResult, runSingleBacktest,
     optimizationResult, isOptimizing, runOptimize,
     capacityResult, exitAnalysis,
   } = useBacktest();
+
+  // Pass real market state for capacity analysis
+  useEffect(() => {
+    if (resolvedMarket) {
+      setMarketState({
+        supplyAssetsUsd: resolvedMarket.state.supplyAssetsUsd ?? 50_000_000,
+        borrowAssetsUsd: resolvedMarket.state.borrowAssetsUsd ?? 30_000_000,
+        apyAtTarget: resolvedMarket.state.apyAtTarget ?? 0.03,
+      });
+    }
+  }, [resolvedMarket, setMarketState]);
 
   // Track pending params so we can auto-run when data loads
   const pendingParams = useRef<{

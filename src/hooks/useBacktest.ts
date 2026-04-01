@@ -27,6 +27,11 @@ interface UseBacktestReturn {
     startTimestamp: number;
     endTimestamp: number;
   }) => void;
+  setMarketState: (state: {
+    supplyAssetsUsd: number;
+    borrowAssetsUsd: number;
+    apyAtTarget: number;
+  }) => void;
   backtestResult: BacktestResult | null;
   runSingleBacktest: (config: BacktestConfig) => void;
   optimizationResult: OptimizationResult | null;
@@ -47,6 +52,21 @@ export function useBacktest(): UseBacktestReturn {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [capacityResult, setCapacityResult] = useState<CapacityResult | null>(null);
   const [exitAnalysis, setExitAnalysis] = useState<ExitAnalysisResult | null>(null);
+
+  // Market state for capacity analysis (set by parent component from resolved Morpho market)
+  const marketStateRef = useRef<{
+    supplyAssetsUsd: number;
+    borrowAssetsUsd: number;
+    apyAtTarget: number;
+  } | null>(null);
+
+  const setMarketState = useCallback((state: {
+    supplyAssetsUsd: number;
+    borrowAssetsUsd: number;
+    apyAtTarget: number;
+  }) => {
+    marketStateRef.current = state;
+  }, []);
 
   const loadedKeyRef = useRef<string | null>(null);
   const loadingRef = useRef(false);
@@ -155,12 +175,14 @@ export function useBacktest(): UseBacktestReturn {
         ? Math.pow(1 + priceReturn, 8760 / actualHoursElapsed) - 1
         : 0;
 
+    // Use real market data if available, otherwise fall back to backtest avg
+    const mkt = marketStateRef.current;
     const cap = runCapacityAnalysis(
       {
         ...backtestResult.config,
-        currentSupplyUsd: 50_000_000,
-        currentBorrowUsd: 30_000_000,
-        apyAtTarget: backtestResult.avgBorrowApy,
+        currentSupplyUsd: mkt?.supplyAssetsUsd ?? 50_000_000,
+        currentBorrowUsd: mkt?.borrowAssetsUsd ?? 30_000_000,
+        apyAtTarget: mkt?.apyAtTarget ?? backtestResult.avgBorrowApy,
       },
       collateralApy
     );
@@ -173,6 +195,7 @@ export function useBacktest(): UseBacktestReturn {
     dataError,
     loadProgress,
     loadData,
+    setMarketState,
     backtestResult,
     runSingleBacktest,
     optimizationResult,
