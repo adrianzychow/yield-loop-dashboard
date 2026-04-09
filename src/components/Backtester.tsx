@@ -13,6 +13,7 @@ import HealthFactorChart from "./backtest/HealthFactorChart";
 import OptimizationHeatmap from "./backtest/OptimizationHeatmap";
 import CapacityCurve from "./backtest/CapacityCurve";
 import ExitSignalTable from "./backtest/ExitSignalTable";
+import EntryCostCalculator from "./EntryCostCalculator";
 
 // ── Market configurations ───────────────────────────────────────────
 
@@ -253,6 +254,15 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
           <EquityChart result={backtestResult} />
           <HealthFactorChart result={backtestResult} />
         </>
+      )}
+
+      {/* ── Section 5: Entry/Exit Cost Calculator ── */}
+      {marketUniqueKey && (
+        <EntryCostCalculator
+          ltv={params.ltv}
+          leverage={params.leverage}
+          startingCapital={params.startingCapital}
+        />
       )}
 
       {/* Optimization */}
