@@ -22,6 +22,7 @@ import {
 import type { PublicClient } from "viem";
 
 const MORPHO_API = "https://blue-api.morpho.org/graphql";
+const AAVE_V3_WETH_POOL_ID = "e880e828-ca59-4ec6-8d4f-27182a4dc23d";
 
 // ── Adaptive interval based on date range ───────────────────────────
 
@@ -81,6 +82,44 @@ async function fetchCoinGeckoHourly(
   }
 
   return Array.from(byHour.values()).sort((a, b) => a.timestamp - b.timestamp);
+}
+
+// ── DeFiLlama Aave borrow rates ────────────────────────────────────
+
+async function fetchAaveBorrowRatesFromLlama(
+  startTimestamp: number,
+  endTimestamp: number
+): Promise<{ timestamp: number; rate: number }[]> {
+  try {
+    const res = await fetch(
+      `https://yields.llama.fi/chart/${AAVE_V3_WETH_POOL_ID}`
+    );
+    const json = await res.json();
+    const points = json?.data ?? [];
+
+    return points
+      .map((p: { timestamp: string; apyBase: number | null }) => {
+        const ts = Math.floor(new Date(p.timestamp).getTime() / 1000);
+        // DeFiLlama apyBase is supply APY; for borrow, we approximate
+        // using the relation: borrowRate ≈ supplyRate / utilization
+        // But DeFiLlama chart only has supply side. Use apyBase as borrow proxy.
+        // Note: The lendBorrow endpoint has the real borrow rate but no history.
+        // For accuracy we use the supply rate as a lower bound of the borrow rate.
+        const rate = (p.apyBase ?? 0) / 100; // convert percent to decimal
+        return { timestamp: ts, rate };
+      })
+      .filter(
+        (p: { timestamp: number }) =>
+          p.timestamp >= startTimestamp && p.timestamp <= endTimestamp
+      )
+      .sort(
+        (a: { timestamp: number }, b: { timestamp: number }) =>
+          a.timestamp - b.timestamp
+      );
+  } catch (err) {
+    console.error("DeFiLlama Aave borrow rates error:", err);
+    return [];
+  }
 }
 
 // ── Morpho hourly borrow rates ─────────────────────────────────────
@@ -285,18 +324,23 @@ export async function loadWstEthBacktestDataClient(
       });
       return fetchCoinGeckoHourly("wrapped-steth", startTimestamp, endTimestamp);
     })(),
-    // Morpho: borrow rates
+    // Borrow rates: Morpho or Aave depending on market key
     (async () => {
+      const isAave = marketUniqueKey === "aave-wsteth-eth";
       onProgress?.({
         stage: "morpho",
-        message: "Fetching Morpho borrow rates...",
+        message: isAave
+          ? "Fetching Aave borrow rates from DeFiLlama..."
+          : "Fetching Morpho borrow rates...",
         percent: 25,
       });
-      return fetchMorphoHourlyBorrowRates(
-        marketUniqueKey,
-        startTimestamp,
-        endTimestamp
-      );
+      return isAave
+        ? fetchAaveBorrowRatesFromLlama(startTimestamp, endTimestamp)
+        : fetchMorphoHourlyBorrowRates(
+            marketUniqueKey,
+            startTimestamp,
+            endTimestamp
+          );
     })(),
   ]);
 

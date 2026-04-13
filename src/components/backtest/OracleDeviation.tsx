@@ -101,17 +101,29 @@ function computeStats(data: HourlyDataPoint[]): DeviationStats {
 }
 
 export default function OracleDeviation({ data, assetLabel = "sUSDS" }: OracleDeviationProps) {
-  const stats = computeStats(data);
-
   const isWstEth = assetLabel === "wstETH";
+
+  // For wstETH: compare wstETH/ETH ratios using on-chain Chainlink ETH/USD
+  // On-chain ratio = exchangeRate (CAPO-adjusted Lido ratio)
+  // Market ratio = coingeckoPrice / basePrice (CoinGecko wstETH_USD / Chainlink ETH_USD)
+  const ratioBased = isWstEth
+    ? data.map((p) => ({
+        ...p,
+        oraclePrice: p.exchangeRate,
+        coingeckoPrice: p.basePrice > 0 ? p.coingeckoPrice / p.basePrice : p.exchangeRate,
+      }))
+    : data;
+
+  const stats = computeStats(ratioBased);
+
   const oracleDesc = isWstEth
-    ? "On-chain oracle (Lido ratio + CAPO + Chainlink ETH/USD) vs CoinGecko wstETH/USD"
+    ? "CAPO wstETH/ETH ratio (on-chain) vs market-implied ratio (CoinGecko wstETH / Chainlink ETH)"
     : "On-chain oracle (Chainlink + vault rate) vs CoinGecko sUSDS/USD";
 
   // Sample for chart
-  const step = Math.max(1, Math.floor(data.length / 600));
-  const chartData = data
-    .filter((_, i) => i % step === 0 || i === data.length - 1)
+  const step = Math.max(1, Math.floor(ratioBased.length / 600));
+  const chartData = ratioBased
+    .filter((_, i) => i % step === 0 || i === ratioBased.length - 1)
     .map((p) => ({
       date: new Date(p.timestamp * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
       oracle: Math.round(p.oraclePrice * 10000) / 10000,
@@ -122,7 +134,7 @@ export default function OracleDeviation({ data, assetLabel = "sUSDS" }: OracleDe
   return (
     <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
       <h3 className="text-lg font-semibold text-gray-200 mb-1">
-        Oracle vs Off-Chain Price
+        {isWstEth ? "wstETH/ETH Ratio: Oracle vs Market" : "Oracle vs Off-Chain Price"}
       </h3>
       <p className="text-sm text-gray-500 mb-4">
         {oracleDesc}
@@ -142,20 +154,26 @@ export default function OracleDeviation({ data, assetLabel = "sUSDS" }: OracleDe
 
       {/* Price overlay chart */}
       <div className="mb-4">
-        <div className="text-sm text-gray-400 mb-2">Price Comparison</div>
+        <div className="text-sm text-gray-400 mb-2">
+          {isWstEth ? "wstETH/ETH Ratio Comparison" : "Price Comparison"}
+        </div>
         <ResponsiveContainer width="100%" height={250}>
           <LineChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
             <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
             <YAxis yAxisId="price" stroke="#6b7280" tick={{ fontSize: 10 }} domain={["auto", "auto"]}
-              tickFormatter={(v) => `$${v.toFixed(3)}`} />
+              tickFormatter={(v) => isWstEth ? v.toFixed(4) : `$${v.toFixed(3)}`} />
             <YAxis yAxisId="spread" orientation="right" stroke="#f59e0b" tick={{ fontSize: 10 }}
               tickFormatter={(v) => `${v.toFixed(2)}%`} />
             <Tooltip
               contentStyle={{ backgroundColor: "#111827", border: "1px solid #374151", borderRadius: "8px" }}
               formatter={(value, name) => {
                 if (name === "spread") return [`${Number(value).toFixed(3)}%`, "Spread"];
-                return [`$${Number(value).toFixed(4)}`, name === "oracle" ? "Oracle" : "CoinGecko"];
+                const prefix = isWstEth ? "" : "$";
+                const label = name === "oracle"
+                  ? (isWstEth ? "CAPO Ratio" : "Oracle")
+                  : (isWstEth ? "Market Ratio" : "CoinGecko");
+                return [`${prefix}${Number(value).toFixed(4)}`, label];
               }}
               labelStyle={{ color: "#9ca3af" }}
             />
@@ -165,8 +183,8 @@ export default function OracleDeviation({ data, assetLabel = "sUSDS" }: OracleDe
           </LineChart>
         </ResponsiveContainer>
         <div className="flex gap-4 mt-2 text-xs text-gray-500 justify-center">
-          <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-emerald-500 inline-block" /> Oracle (on-chain)</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-500 inline-block" /> CoinGecko (off-chain)</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-emerald-500 inline-block" /> {isWstEth ? "CAPO Ratio (on-chain)" : "Oracle (on-chain)"}</span>
+          <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-500 inline-block" /> {isWstEth ? "Market Ratio (CoinGecko/Chainlink)" : "CoinGecko (off-chain)"}</span>
           <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-amber-500 inline-block border-dashed" /> Spread % (right axis)</span>
         </div>
       </div>

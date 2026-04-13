@@ -102,14 +102,19 @@ export async function fetchMorphoHistory(
 export function getMorphoBorrowMarkets(
   allMarkets: MorphoMarket[],
   assetName: string,
-  collateralAddress: string
+  collateralAddress: string,
+  allowedBorrowAssets?: string[]
 ): BorrowMarket[] {
   const markets: BorrowMarket[] = [];
 
   const filtered = allMarkets.filter(
     (m) =>
       m.collateralAsset.address.toLowerCase() ===
-      collateralAddress.toLowerCase()
+        collateralAddress.toLowerCase() &&
+      (!allowedBorrowAssets ||
+        allowedBorrowAssets.some(
+          (a) => a.toUpperCase() === m.loanAsset.symbol.toUpperCase()
+        ))
   );
 
   for (const m of filtered) {

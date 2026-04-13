@@ -61,7 +61,8 @@ function assembleStrategies(data: AllData): StrategyRow[] {
         const morphoMarkets = getMorphoBorrowMarkets(
           data.morphoMarkets,
           asset.name,
-          venueConfig.morphoCollateralAddress
+          venueConfig.morphoCollateralAddress,
+          venueConfig.borrowAssets
         );
         allBorrowMarkets.push(...morphoMarkets);
       }

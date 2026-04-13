@@ -79,7 +79,11 @@ async function fetchAssetHistory(
         (m) =>
           m.collateralAsset.address.toLowerCase() ===
             venue.morphoCollateralAddress!.toLowerCase() &&
-          (m.state.liquidityAssetsUsd ?? 0) >= 1000
+          (m.state.liquidityAssetsUsd ?? 0) >= 1000 &&
+          (!venue.borrowAssets ||
+            venue.borrowAssets.some(
+              (a) => a.toUpperCase() === m.loanAsset.symbol.toUpperCase()
+            ))
       );
       for (const market of relevantMarkets) {
         const color = SERIES_COLORS[colorIdx++ % SERIES_COLORS.length];
