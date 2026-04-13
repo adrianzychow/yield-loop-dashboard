@@ -13,6 +13,7 @@ import type { HourlyDataPoint } from "@/lib/backtester/types";
 
 interface OracleDeviationProps {
   data: HourlyDataPoint[];
+  assetLabel?: string;
 }
 
 interface DeviationStats {
@@ -99,8 +100,13 @@ function computeStats(data: HourlyDataPoint[]): DeviationStats {
   };
 }
 
-export default function OracleDeviation({ data }: OracleDeviationProps) {
+export default function OracleDeviation({ data, assetLabel = "sUSDS" }: OracleDeviationProps) {
   const stats = computeStats(data);
+
+  const isWstEth = assetLabel === "wstETH";
+  const oracleDesc = isWstEth
+    ? "On-chain oracle (Lido ratio + CAPO + Chainlink ETH/USD) vs CoinGecko wstETH/USD"
+    : "On-chain oracle (Chainlink + vault rate) vs CoinGecko sUSDS/USD";
 
   // Sample for chart
   const step = Math.max(1, Math.floor(data.length / 600));
@@ -119,7 +125,7 @@ export default function OracleDeviation({ data }: OracleDeviationProps) {
         Oracle vs Off-Chain Price
       </h3>
       <p className="text-sm text-gray-500 mb-4">
-        On-chain oracle (Chainlink + vault rate) vs CoinGecko sUSDS/USD
+        {oracleDesc}
       </p>
 
       {/* Summary stats */}

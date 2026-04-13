@@ -6,6 +6,7 @@ export const AAVE_V3_BORROW_POOLS: Record<string, string> = {
   USDT: "f981a304-bb6c-45b8-b0c5-fd2f515ad23a",
   RLUSD: "85fc6934-c94d-4ebe-9c60-66beb363669f",
   PYUSD: "d118f505-e75f-4152-bad3-49a2dc7482bf",
+  WETH: "e880e828-ca59-4ec6-8d4f-27182a4dc23d",
 };
 
 // Aave Horizon borrow pool IDs
@@ -21,6 +22,7 @@ export const MORPHO_COLLATERAL_ADDRESSES: Record<string, string> = {
   SyrupUSDT: "0x356B8d89c1e1239Cbbb9dE4815c39A1474d5BA7D",
   sUSDS: "0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD",
   sNUSD: "0x08EFCC2F3e61185D0EA7F8830B3FEc9Bfa2EE313",
+  wstETH: "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
 };
 
 // Borrow asset addresses on Ethereum
@@ -29,6 +31,7 @@ export const BORROW_ASSET_ADDRESSES: Record<string, string> = {
   USDT: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
   PYUSD: "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8",
   RLUSD: "0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD",
+  WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
 };
 
 // Aave token addresses for link generation
@@ -37,6 +40,7 @@ export const AAVE_TOKEN_ADDRESSES: Record<string, string> = {
   USDT: "0xdac17f958d2ee523a2206206994597c13d831ec7",
   RLUSD: "0x8292bb45bf1ee4d140127049757c2e0ff06317ed",
   PYUSD: "0x6c3ea9036406852006290770bedfcaba0e23a0e8",
+  WETH: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
 };
 
 export const ASSETS: AssetConfig[] = [
@@ -133,6 +137,25 @@ export const ASSETS: AssetConfig[] = [
         venue: "Aave Horizon",
         borrowAssets: ["USDC", "RLUSD"],
         poolIds: AAVE_HORIZON_BORROW_POOLS,
+      },
+    ],
+  },
+  {
+    name: "wstETH",
+    displayName: "Lido wstETH",
+    chain: "Ethereum",
+    // DeFiLlama: Lido staking pool for ETH
+    baseYieldPoolIds: ["747c1d2a-c668-4682-b9f9-296708a3dd90"],
+    borrowVenues: [
+      {
+        venue: "Aave V3",
+        borrowAssets: ["WETH"],
+        poolIds: { WETH: AAVE_V3_BORROW_POOLS.WETH },
+      },
+      {
+        venue: "Morpho",
+        borrowAssets: ["WETH"],
+        morphoCollateralAddress: MORPHO_COLLATERAL_ADDRESSES.wstETH,
       },
     ],
   },

@@ -20,8 +20,8 @@ export default function HistoricalCharts({ asset, morphoMarkets }: Props) {
   const { priceHistory, apyHistory, borrowRateSeries, isLoading } =
     useHistoricalData(asset, morphoMarkets, range);
 
-  // Show oracle overlay only for sUSDS (we have oracle data for it)
-  const showOracleOverlay = asset.name === "sUSDS";
+  // Show oracle overlay for sUSDS and wstETH (assets with on-chain oracle data)
+  const showOracleOverlay = asset.name === "sUSDS" || asset.name === "wstETH";
 
   return (
     <div className="mt-8">

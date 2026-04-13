@@ -23,24 +23,35 @@ const MARKET_OPTIONS = [
     collateralAsset: "sUSDS",
     borrowAsset: "USDT",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDS,
+    loaderType: "stablecoin" as const,
   },
   {
     label: "sUSDS / USDC (Morpho)",
     collateralAsset: "sUSDS",
     borrowAsset: "USDC",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDS,
+    loaderType: "stablecoin" as const,
   },
   {
     label: "sUSDE / USDT (Morpho)",
     collateralAsset: "sUSDE",
     borrowAsset: "USDT",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDE,
+    loaderType: "stablecoin" as const,
   },
   {
     label: "sUSDE / USDC (Morpho)",
     collateralAsset: "sUSDE",
     borrowAsset: "USDC",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDE,
+    loaderType: "stablecoin" as const,
+  },
+  {
+    label: "wstETH / WETH (Morpho)",
+    collateralAsset: "wstETH",
+    borrowAsset: "WETH",
+    vaultAddress: MORPHO_COLLATERAL_ADDRESSES.wstETH,
+    loaderType: "wsteth" as const,
   },
 ];
 
@@ -120,6 +131,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
           vaultAddress: selectedOption.vaultAddress,
           startTimestamp: p.startTimestamp,
           endTimestamp: p.endTimestamp,
+          loaderType: selectedOption.loaderType,
         });
       }
     },
@@ -188,7 +200,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
       {/* ── Section 1: Oracle Deviation & Borrow Rate (shown after data loads) ── */}
       {data && data.length > 0 && (
         <>
-          <OracleDeviation data={data} />
+          <OracleDeviation data={data} assetLabel={selectedOption.loaderType === "wsteth" ? "wstETH" : "sUSDS"} />
           <BorrowRateHistory data={data} />
         </>
       )}
