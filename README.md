@@ -14,8 +14,9 @@ A real-time analytics dashboard for on-chain looping (leverage) strategies on yi
 | SyrupUSDT | Maple SyrupUSDT | Aave V3, Morpho | DeFiLlama |
 | sNUSD | Neutrl sNUSD | Morpho | Manual (Pendle implied) |
 | VBILL | VanEck VBILL | Aave Horizon | Manual (T-bill rate) |
+| wstETH | Lido wstETH | Aave V3 (E-Mode), Morpho | DeFiLlama (Lido staking) |
 
-Borrow assets: USDC, USDT, PYUSD, RLUSD across all venues.
+Borrow assets: USDC, USDT, PYUSD, RLUSD for stablecoin strategies; WETH for wstETH strategies.
 
 ---
 
@@ -32,6 +33,7 @@ Per-asset detail view with:
 - Borrow venue comparison table sorted by rate
 - Historical charts: price, APY, and borrow rates by venue
 - For sUSDS: oracle vs CoinGecko price overlay with deviation stats
+- For wstETH: CAPO oracle ratio vs market-implied ratio overlay with deviation stats
 - APR summary: 30-day average, 90-day average, 90-day annualized volatility
 
 ### Flash Loan Builder
@@ -159,6 +161,46 @@ Each component is queried on-chain at historical block numbers:
 
 These addresses were read directly from the oracle contract's `BASE_FEED_1`, `QUOTE_FEED_1`, and `VAULT` storage slots.
 
+### wstETH/ETH Oracle Architecture (CAPO)
+
+For wstETH/ETH looping strategies, the oracle uses Aave's **Correlated Asset Price Oracle (CAPO)** mechanism rather than the Morpho oracle. CAPO caps the wstETH/stETH exchange ratio growth to prevent manipulation.
+
+```
+Oracle Price = min(Lido Ratio, CAPO Ceiling) x ETH/USD
+```
+
+Where the CAPO ceiling grows linearly from a snapshot:
+```
+CAPO Ceiling = Snapshot Ratio + Max Growth Per Second x (Current Time - Snapshot Time)
+```
+
+On-chain data sources at each historical block:
+
+| Component | Contract | Method | Decimals |
+|-----------|----------|--------|----------|
+| wstETH/stETH Ratio | stETH `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84` | `getPooledEthByShares(1e18)` | 18 |
+| ETH/USD | Chainlink `0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419` | `latestRoundData()` | 8 |
+| CAPO Snapshot Ratio | `0xe1D97bF61901B075E9626c8A2340a7De385861Ef` | `snapshotRatio()` | 18 |
+| CAPO Snapshot Timestamp | `0xe1D97bF61901B075E9626c8A2340a7De385861Ef` | `snapshotTimestamp()` | — |
+| CAPO Max Growth/s | `0xe1D97bF61901B075E9626c8A2340a7De385861Ef` | `maxYearlyRatioGrowthPercent()` | 18 |
+
+The effective ratio is `min(lidoRatio, capoCeiling)`. In practice, the ceiling only binds during rapid staking ratio increases, acting as a safety cap.
+
+**Deviation analysis for wstETH** compares ratios rather than USD prices to isolate oracle risk from ETH price volatility:
+- **On-chain ratio:** CAPO-adjusted wstETH/ETH ratio
+- **Market ratio:** CoinGecko wstETH/USD divided by Chainlink ETH/USD
+
+This surfaces genuine oracle risk (e.g., CAPO ceiling binding during rapid ratio growth) without confounding it with normal ETH/USD price movements.
+
+### wstETH Borrow Rate Sources
+
+| Venue | Source | Data |
+|-------|--------|------|
+| Morpho wstETH/WETH | Morpho GraphQL API | `historicalState.borrowApy` with `interval: HOUR` |
+| Aave V3 wstETH/ETH (E-Mode) | DeFiLlama | `/yields/chart/e880e828-ca59-4ec6-8d4f-27182a4dc23d` (Aave V3 WETH pool) |
+
+The Aave V3 E-Mode for wstETH/ETH has a liquidation threshold of 93% and max LTV of 90%.
+
 ### Data Collection
 
 All data is fetched client-side via an Alchemy archive node to avoid serverless timeout constraints.
@@ -275,8 +317,10 @@ For each signal: trigger count, timestamps, whether it would have exited before 
 | DeFiLlama | Base yields, Aave borrow rates, TVL | `yields.llama.fi/pools`, `/lendBorrow`, `/chart/{id}` | 5 min |
 | Morpho GraphQL | Market data, borrow APY, utilization, LLTV | `blue-api.morpho.org/graphql` | 5 min |
 | CoinGecko | Token prices, historical prices | `api.coingecko.com/api/v3/` | 2 min |
-| Chainlink (on-chain) | DAI/USD, USDT/USD price feeds | Archive node RPC | On-demand |
+| Chainlink (on-chain) | DAI/USD, USDT/USD, ETH/USD price feeds | Archive node RPC | On-demand |
 | sUSDS Vault (on-chain) | Exchange rate (sUSDS to USDS) | Archive node RPC | On-demand |
+| Lido stETH (on-chain) | wstETH/stETH exchange ratio | `getPooledEthByShares(1e18)` | On-demand |
+| CAPO Adapter (on-chain) | wstETH ratio ceiling params | `snapshotRatio()`, `maxYearlyRatioGrowthPercent()` | On-demand |
 
 ---
 
