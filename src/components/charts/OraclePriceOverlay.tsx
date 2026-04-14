@@ -20,6 +20,12 @@ import {
   batchGetOracleSnapshots,
   SUSDS_VAULT,
 } from "@/lib/backtester/onchain";
+import {
+  fetchCapoParams,
+  fetchWstEthOracleAtBlock,
+  type CapoParams,
+} from "@/lib/wsteth-oracle";
+import type { PublicClient } from "viem";
 
 interface Props {
   coingeckoData: HistoricalDataPoint[];
@@ -37,12 +43,14 @@ export default function OraclePriceOverlay({ coingeckoData, range, assetName }: 
   const [isLoadingOracle, setIsLoadingOracle] = useState(false);
   const loadedRange = useRef<string | null>(null);
 
+  const isWstEth = assetName === "Lido wstETH";
+
   useEffect(() => {
     const rpcUrl = process.env.NEXT_PUBLIC_ETH_RPC_URL;
-    if (!rpcUrl || loadedRange.current === range) return;
+    if (!rpcUrl || loadedRange.current === `${range}-${assetName}`) return;
 
     let cancelled = false;
-    loadedRange.current = range;
+    loadedRange.current = `${range}-${assetName}`;
 
     const fetchOracle = async () => {
       setIsLoadingOracle(true);
@@ -50,20 +58,50 @@ export default function OraclePriceOverlay({ coingeckoData, range, assetName }: 
         const days = rangeToDays(range);
         const now = Math.floor(Date.now() / 1000);
         const start = now - days * 86400;
-        // Use wider intervals for longer periods
         const interval = days <= 30 ? 3600 * 4 : days <= 90 ? 3600 * 8 : 3600 * 12;
 
         const client = getClient(rpcUrl);
         const blocks = await resolveHourlyBlocks(client, start, now, interval);
-        const snapshots = await batchGetOracleSnapshots(client, SUSDS_VAULT, blocks);
 
-        if (!cancelled) {
-          setOracleData(
-            snapshots.map((s) => ({
-              timestamp: s.timestamp,
-              oraclePrice: (s.exchangeRate * s.basePrice) / s.quotePrice,
-            }))
-          );
+        if (isWstEth) {
+          // wstETH oracle: Lido ratio + CAPO ceiling + ETH/USD
+          const capo = await fetchCapoParams(client as PublicClient);
+          const BATCH_SIZE = 30;
+          const results: OraclePoint[] = [];
+
+          for (let i = 0; i < blocks.length; i += BATCH_SIZE) {
+            const batch = blocks.slice(i, i + BATCH_SIZE);
+            const batchResults = await Promise.all(
+              batch.map(async ({ timestamp, blockNumber }) => {
+                const oracle = await fetchWstEthOracleAtBlock(
+                  client as PublicClient,
+                  BigInt(blockNumber),
+                  timestamp,
+                  capo
+                );
+                return oracle ? { timestamp, oraclePrice: oracle.oraclePrice } : null;
+              })
+            );
+            for (const r of batchResults) {
+              if (r) results.push(r);
+            }
+            if (i + BATCH_SIZE < blocks.length) {
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+          }
+
+          if (!cancelled) setOracleData(results);
+        } else {
+          // sUSDS oracle: vault rate + Chainlink feeds
+          const snapshots = await batchGetOracleSnapshots(client, SUSDS_VAULT, blocks);
+          if (!cancelled) {
+            setOracleData(
+              snapshots.map((s) => ({
+                timestamp: s.timestamp,
+                oraclePrice: (s.exchangeRate * s.basePrice) / s.quotePrice,
+              }))
+            );
+          }
         }
       } catch (err) {
         console.error("Oracle price fetch error:", err);
@@ -74,7 +112,7 @@ export default function OraclePriceOverlay({ coingeckoData, range, assetName }: 
 
     fetchOracle();
     return () => { cancelled = true; };
-  }, [range]);
+  }, [range, assetName, isWstEth]);
 
   if (coingeckoData.length === 0 && oracleData.length === 0) {
     return <ChartEmptyState label={`No price history for ${assetName}`} />;
@@ -153,7 +191,7 @@ export default function OraclePriceOverlay({ coingeckoData, range, assetName }: 
             axisLine={{ stroke: "#374151" }}
             tickLine={false}
             domain={["auto", "auto"]}
-            tickFormatter={(v: number) => `$${v.toFixed(4)}`}
+            tickFormatter={(v: number) => isWstEth ? `$${v.toFixed(0)}` : `$${v.toFixed(4)}`}
           />
           <Tooltip
             contentStyle={{
@@ -163,8 +201,8 @@ export default function OraclePriceOverlay({ coingeckoData, range, assetName }: 
               color: "#e5e7eb",
             }}
             formatter={(value, name) => [
-              `$${Number(value).toFixed(6)}`,
-              name === "oracle" ? "Morpho Oracle" : "CoinGecko",
+              `$${Number(value).toFixed(isWstEth ? 2 : 6)}`,
+              name === "oracle" ? (isWstEth ? "Aave CAPO Oracle" : "Morpho Oracle") : "CoinGecko",
             ]}
           />
           <Legend />
@@ -180,7 +218,7 @@ export default function OraclePriceOverlay({ coingeckoData, range, assetName }: 
             <Line
               type="monotone"
               dataKey="oracle"
-              name="Morpho Oracle"
+              name={isWstEth ? "Aave CAPO Oracle" : "Morpho Oracle"}
               stroke="#f59e0b"
               dot={false}
               strokeWidth={1.5}

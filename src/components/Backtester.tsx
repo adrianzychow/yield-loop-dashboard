@@ -23,24 +23,51 @@ const MARKET_OPTIONS = [
     collateralAsset: "sUSDS",
     borrowAsset: "USDT",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDS,
+    loaderType: "stablecoin" as const,
+    venue: "Morpho" as const,
   },
   {
     label: "sUSDS / USDC (Morpho)",
     collateralAsset: "sUSDS",
     borrowAsset: "USDC",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDS,
+    loaderType: "stablecoin" as const,
+    venue: "Morpho" as const,
   },
   {
     label: "sUSDE / USDT (Morpho)",
     collateralAsset: "sUSDE",
     borrowAsset: "USDT",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDE,
+    loaderType: "stablecoin" as const,
+    venue: "Morpho" as const,
   },
   {
     label: "sUSDE / USDC (Morpho)",
     collateralAsset: "sUSDE",
     borrowAsset: "USDC",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDE,
+    loaderType: "stablecoin" as const,
+    venue: "Morpho" as const,
+  },
+  {
+    label: "wstETH / WETH (Morpho)",
+    collateralAsset: "wstETH",
+    borrowAsset: "WETH",
+    vaultAddress: MORPHO_COLLATERAL_ADDRESSES.wstETH,
+    loaderType: "wsteth" as const,
+    venue: "Morpho" as const,
+  },
+  {
+    label: "wstETH / ETH (Aave V3)",
+    collateralAsset: "wstETH",
+    borrowAsset: "WETH",
+    vaultAddress: MORPHO_COLLATERAL_ADDRESSES.wstETH,
+    loaderType: "wsteth" as const,
+    venue: "Aave" as const,
+    // Aave V3 E-Mode wstETH/ETH: LT = 93%, LTV = 90%
+    aaveLiquidationLtv: 0.93,
+    aaveBorrowApy: null as number | null, // fetched from DeFiLlama
   },
 ];
 
@@ -59,18 +86,25 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
   });
 
   const selectedOption = MARKET_OPTIONS[selectedMarketIdx];
+  const isAaveMarket = selectedOption.venue === "Aave";
 
-  // Resolve market — pick highest liquidity
-  const resolvedMarket = morphoMarkets
-    .filter(
-      (m) =>
-        m.collateralAsset.address.toLowerCase() === selectedOption.vaultAddress.toLowerCase() &&
-        m.loanAsset.symbol.toUpperCase() === selectedOption.borrowAsset.toUpperCase()
-    )
-    .sort((a, b) => (b.state.liquidityAssetsUsd ?? 0) - (a.state.liquidityAssetsUsd ?? 0))[0] ?? null;
+  // Resolve market — pick highest liquidity (Morpho markets only)
+  const resolvedMarket = isAaveMarket
+    ? null
+    : morphoMarkets
+        .filter(
+          (m) =>
+            m.collateralAsset.address.toLowerCase() === selectedOption.vaultAddress.toLowerCase() &&
+            m.loanAsset.symbol.toUpperCase() === selectedOption.borrowAsset.toUpperCase()
+        )
+        .sort((a, b) => (b.state.liquidityAssetsUsd ?? 0) - (a.state.liquidityAssetsUsd ?? 0))[0] ?? null;
 
-  const marketUniqueKey = resolvedMarket?.uniqueKey ?? "";
-  const liquidationLtv = resolvedMarket ? Number(resolvedMarket.lltv) / 1e18 : 0.86;
+  const marketUniqueKey = resolvedMarket?.uniqueKey ?? (isAaveMarket ? "aave-wsteth-eth" : "");
+  const liquidationLtv = isAaveMarket
+    ? (selectedOption.aaveLiquidationLtv ?? 0.93)
+    : resolvedMarket
+      ? Number(resolvedMarket.lltv) / 1e18
+      : 0.86;
 
   const {
     data, isLoadingData, dataError, loadProgress, loadData, setMarketState,
@@ -120,6 +154,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
           vaultAddress: selectedOption.vaultAddress,
           startTimestamp: p.startTimestamp,
           endTimestamp: p.endTimestamp,
+          loaderType: selectedOption.loaderType,
         });
       }
     },
@@ -176,11 +211,17 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
               </span></span>
             </div>
           )}
+          {isAaveMarket && (
+            <div className="flex gap-4 text-sm text-gray-400 pt-5">
+              <span>Liquidation Threshold (E-Mode): <span className="text-gray-200">{(liquidationLtv * 100).toFixed(1)}%</span></span>
+              <span>Venue: <span className="text-gray-200">Aave V3 Ethereum</span></span>
+            </div>
+          )}
         </div>
 
         {!marketUniqueKey && (
           <div className="mt-3 text-sm text-amber-400">
-            Market not found in Morpho data. Make sure the dashboard has loaded.
+            Market not found. Make sure the dashboard has loaded.
           </div>
         )}
       </div>
@@ -188,7 +229,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
       {/* ── Section 1: Oracle Deviation & Borrow Rate (shown after data loads) ── */}
       {data && data.length > 0 && (
         <>
-          <OracleDeviation data={data} />
+          <OracleDeviation data={data} assetLabel={selectedOption.loaderType === "wsteth" ? "wstETH" : "sUSDS"} />
           <BorrowRateHistory data={data} />
         </>
       )}

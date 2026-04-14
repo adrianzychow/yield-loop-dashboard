@@ -11,6 +11,8 @@ export const COINGECKO_IDS: Record<string, string> = {
   USDT: "tether",
   PYUSD: "paypal-usd",
   RLUSD: "ripple-usd",
+  wstETH: "wrapped-steth",
+  WETH: "weth",
 };
 
 let priceCache: { data: Record<string, number>; ts: number } | null = null;

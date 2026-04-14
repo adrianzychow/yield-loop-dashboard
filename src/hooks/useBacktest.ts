@@ -14,6 +14,7 @@ import { runOptimization } from "@/lib/backtester/optimizer";
 import { runCapacityAnalysis } from "@/lib/backtester/capacity";
 import { analyzeExitSignals } from "@/lib/backtester/exitSignals";
 import { loadBacktestDataClient, type LoadProgress } from "@/lib/backtester/dataLoader";
+import { loadWstEthBacktestDataClient } from "@/lib/backtester/wstethDataLoader";
 
 interface UseBacktestReturn {
   data: HourlyDataPoint[] | null;
@@ -26,6 +27,7 @@ interface UseBacktestReturn {
     vaultAddress: string;
     startTimestamp: number;
     endTimestamp: number;
+    loaderType?: "stablecoin" | "wsteth";
   }) => void;
   setMarketState: (state: {
     supplyAssetsUsd: number;
@@ -77,6 +79,7 @@ export function useBacktest(): UseBacktestReturn {
     vaultAddress: string;
     startTimestamp: number;
     endTimestamp: number;
+    loaderType?: "stablecoin" | "wsteth";
   }) => {
     const rpcUrl = process.env.NEXT_PUBLIC_ETH_RPC_URL;
     if (!rpcUrl) {
@@ -84,7 +87,7 @@ export function useBacktest(): UseBacktestReturn {
       return;
     }
 
-    const loadKey = `${opts.marketUniqueKey}-${opts.startTimestamp}-${opts.endTimestamp}`;
+    const loadKey = `${opts.loaderType ?? "stablecoin"}-${opts.marketUniqueKey}-${opts.startTimestamp}-${opts.endTimestamp}`;
 
     // Skip if already loaded or currently loading
     if (loadedKeyRef.current === loadKey || loadingRef.current) {
@@ -96,14 +99,25 @@ export function useBacktest(): UseBacktestReturn {
     setDataError(null);
     setLoadProgress({ stage: "blocks", message: "Starting...", percent: 0 });
 
-    loadBacktestDataClient(
-      rpcUrl,
-      opts.marketUniqueKey,
-      opts.vaultAddress,
-      opts.startTimestamp,
-      opts.endTimestamp,
-      (progress) => setLoadProgress(progress)
-    )
+    const loadPromise =
+      opts.loaderType === "wsteth"
+        ? loadWstEthBacktestDataClient(
+            rpcUrl,
+            opts.marketUniqueKey,
+            opts.startTimestamp,
+            opts.endTimestamp,
+            (progress) => setLoadProgress(progress)
+          )
+        : loadBacktestDataClient(
+            rpcUrl,
+            opts.marketUniqueKey,
+            opts.vaultAddress,
+            opts.startTimestamp,
+            opts.endTimestamp,
+            (progress) => setLoadProgress(progress)
+          );
+
+    loadPromise
       .then((result) => {
         setData(result);
         setIsLoadingData(false);
