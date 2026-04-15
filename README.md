@@ -42,6 +42,22 @@ Simulates single-transaction leveraged entry via flash loans. Models the full at
 
 Flash loan providers: Balancer (0 bps), Aave V3 (5 bps), Morpho Flash (0 bps). DEX aggregators: 1inch, Paraswap, Uniswap V3, CowSwap.
 
+### Entry & Exit Cost Calculator
+
+Quotes three venues side by side and picks the cheapest:
+
+| Venue | Source | Notes |
+|-------|--------|-------|
+| Curve StableSwap | on-chain `get_dy` | per-market pool address (e.g. sUSDS/USDT, wstETH/ETH); slippage is derived by comparing against a tiny reference swap, so the exchange-rate spread is separated from price impact |
+| Uniswap V3 | on-chain `QuoterV2.quoteExactInputSingle` | full concentrated-liquidity tick-walk simulation (replaces the old constant-product approximation) |
+| Aggregator (0x / 1inch) | server-proxied price endpoint | realistic routing quote; enabled by setting `ZEROEX_API_KEY` or `ONEINCH_API_KEY` on the server. Falls back silently when unset |
+
+Each loop is quoted individually. The aggregator quote is compared against a
+1-token reference quote to isolate slippage + aggregator routing cost.
+
+Gas is computed per venue: Morpho Blue (~230k supply+borrow), Aave V3 (~390k),
+Aave V3 E-Mode (+30k), plus per-loop swap gas and any wrap/stake overhead.
+
 ---
 
 ## Calculator — Methodology

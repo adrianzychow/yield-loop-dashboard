@@ -4,6 +4,9 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { useBacktest } from "@/hooks/useBacktest";
 import { MORPHO_COLLATERAL_ADDRESSES } from "@/lib/constants";
 import type { MorphoMarket } from "@/lib/types";
+import type { SwapConfig } from "@/lib/swapQuotes";
+import type { GasProfile } from "@/lib/gasEstimates";
+import { getAddress } from "viem";
 import ParameterInputs from "./backtest/ParameterInputs";
 import OracleDeviation from "./backtest/OracleDeviation";
 import BorrowRateHistory from "./backtest/BorrowRateHistory";
@@ -15,59 +18,200 @@ import CapacityCurve from "./backtest/CapacityCurve";
 import ExitSignalTable from "./backtest/ExitSignalTable";
 import EntryCostCalculator from "./EntryCostCalculator";
 
+// ── Token addresses ─────────────────────────────────────────────────
+
+const TOK = {
+  USDT: {
+    address: getAddress("0xdAC17F958D2ee523a2206206994597C13D831ec7"),
+    decimals: 6,
+    symbol: "USDT",
+  },
+  USDC: {
+    address: getAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+    decimals: 6,
+    symbol: "USDC",
+  },
+  sUSDS: {
+    address: getAddress("0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD"),
+    decimals: 18,
+    symbol: "sUSDS",
+  },
+  WETH: {
+    address: getAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
+    decimals: 18,
+    symbol: "WETH",
+  },
+  wstETH: {
+    address: getAddress("0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"),
+    decimals: 18,
+    symbol: "wstETH",
+  },
+};
+
+// Curve pools referenced by the calculator
+const CURVE_POOLS = {
+  // sUSDS/USDT StableSwap (coin0=sUSDS 18dp, coin1=USDT 6dp), legacy int128
+  SUSDS_USDT: getAddress("0x00836fE54625bE242bcfA286207795405cA4FD10"),
+  // wstETH/ETH pool (legacy int128, fee 0.04%)
+  WSTETH_ETH: getAddress("0xDC24316b9AE028F1497c275EB9192a3Ea0f67022"),
+};
+
 // ── Market configurations ───────────────────────────────────────────
 
-const MARKET_OPTIONS = [
+type MarketOption = {
+  label: string;
+  collateralAsset: string;
+  borrowAsset: string;
+  vaultAddress: string;
+  loaderType: "stablecoin" | "wsteth";
+  venue: "Morpho" | "Aave";
+  disabled?: boolean;
+  disabledReason?: string;
+  aaveLiquidationLtv?: number;
+  aaveBorrowApy?: number | null;
+  swapConfig: SwapConfig;
+  gasProfile: GasProfile;
+};
+
+const MARKET_OPTIONS: MarketOption[] = [
   {
     label: "sUSDS / USDT (Morpho)",
     collateralAsset: "sUSDS",
     borrowAsset: "USDT",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDS,
-    loaderType: "stablecoin" as const,
-    venue: "Morpho" as const,
+    loaderType: "stablecoin",
+    venue: "Morpho",
+    swapConfig: {
+      label: "USDT ↔ sUSDS",
+      debtToken: TOK.USDT,
+      collateralToken: TOK.sUSDS,
+      curve: {
+        address: CURVE_POOLS.SUSDS_USDT,
+        // coin0 = sUSDS, coin1 = USDT
+        entryFromIdx: 1, // USDT in
+        entryToIdx: 0, // sUSDS out
+        abi: "int128",
+        feePct: 0.0004,
+      },
+      uniswapV3: { feeTier: 100 },
+      aggregator: true,
+    },
+    gasProfile: {
+      lender: "morpho",
+      // supply + borrow + swap already counted; extra = Sky SavingsRate stake
+      perLoopExtras: 60_000,
+      label: "Morpho Blue + Sky",
+    },
   },
   {
     label: "sUSDS / USDC (Morpho)",
     collateralAsset: "sUSDS",
     borrowAsset: "USDC",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDS,
-    loaderType: "stablecoin" as const,
-    venue: "Morpho" as const,
+    loaderType: "stablecoin",
+    venue: "Morpho",
+    swapConfig: {
+      label: "USDC ↔ sUSDS",
+      debtToken: TOK.USDC,
+      collateralToken: TOK.sUSDS,
+      // No deep direct Curve pool; leave Curve off and let aggregator + Uni V3
+      uniswapV3: { feeTier: 100 },
+      aggregator: true,
+    },
+    gasProfile: {
+      lender: "morpho",
+      perLoopExtras: 60_000,
+      label: "Morpho Blue + Sky",
+    },
   },
   {
-    label: "sUSDE / USDT (Morpho)",
+    label: "sUSDE / USDT (Morpho) — not supported",
     collateralAsset: "sUSDE",
     borrowAsset: "USDT",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDE,
-    loaderType: "stablecoin" as const,
-    venue: "Morpho" as const,
+    loaderType: "stablecoin",
+    venue: "Morpho",
+    disabled: true,
+    disabledReason:
+      "Backtester currently models only sUSDS and wstETH/ETH oracles accurately",
+    swapConfig: {
+      label: "USDT ↔ sUSDE",
+      debtToken: TOK.USDT,
+      collateralToken: TOK.USDT, // placeholder — unused while disabled
+      aggregator: true,
+    },
+    gasProfile: { lender: "morpho", perLoopExtras: 0, label: "Morpho Blue" },
   },
   {
-    label: "sUSDE / USDC (Morpho)",
+    label: "sUSDE / USDC (Morpho) — not supported",
     collateralAsset: "sUSDE",
     borrowAsset: "USDC",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.sUSDE,
-    loaderType: "stablecoin" as const,
-    venue: "Morpho" as const,
+    loaderType: "stablecoin",
+    venue: "Morpho",
+    disabled: true,
+    disabledReason:
+      "Backtester currently models only sUSDS and wstETH/ETH oracles accurately",
+    swapConfig: {
+      label: "USDC ↔ sUSDE",
+      debtToken: TOK.USDC,
+      collateralToken: TOK.USDC,
+      aggregator: true,
+    },
+    gasProfile: { lender: "morpho", perLoopExtras: 0, label: "Morpho Blue" },
   },
   {
     label: "wstETH / WETH (Morpho)",
     collateralAsset: "wstETH",
     borrowAsset: "WETH",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.wstETH,
-    loaderType: "wsteth" as const,
-    venue: "Morpho" as const,
+    loaderType: "wsteth",
+    venue: "Morpho",
+    swapConfig: {
+      label: "WETH ↔ wstETH",
+      debtToken: TOK.WETH,
+      collateralToken: TOK.wstETH,
+      curve: {
+        address: CURVE_POOLS.WSTETH_ETH,
+        // coin0 = ETH (native, but Curve uses WETH placeholder via adaptor)
+        // This pool is stETH/ETH. wstETH is routed through wrap/unwrap.
+        // For direct wstETH/WETH, we rely on Uniswap V3 / aggregator instead.
+        entryFromIdx: 0,
+        entryToIdx: 1,
+        abi: "int128",
+        feePct: 0.0004,
+      },
+      uniswapV3: { feeTier: 100 }, // 0.01% wstETH/WETH
+      aggregator: true,
+    },
+    gasProfile: {
+      lender: "morpho",
+      // extras: wrap WETH on loop, wstETH wrap when building position
+      perLoopExtras: 30_000,
+      label: "Morpho Blue",
+    },
   },
   {
-    label: "wstETH / ETH (Aave V3)",
+    label: "wstETH / ETH (Aave V3, E-Mode)",
     collateralAsset: "wstETH",
     borrowAsset: "WETH",
     vaultAddress: MORPHO_COLLATERAL_ADDRESSES.wstETH,
-    loaderType: "wsteth" as const,
-    venue: "Aave" as const,
-    // Aave V3 E-Mode wstETH/ETH: LT = 93%, LTV = 90%
+    loaderType: "wsteth",
+    venue: "Aave",
     aaveLiquidationLtv: 0.93,
-    aaveBorrowApy: null as number | null, // fetched from DeFiLlama
+    aaveBorrowApy: null,
+    swapConfig: {
+      label: "WETH ↔ wstETH",
+      debtToken: TOK.WETH,
+      collateralToken: TOK.wstETH,
+      uniswapV3: { feeTier: 100 },
+      aggregator: true,
+    },
+    gasProfile: {
+      lender: "aave-v3-emode",
+      perLoopExtras: 30_000,
+      label: "Aave V3 E-Mode",
+    },
   },
 ];
 
@@ -196,9 +340,16 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
               className="bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm min-w-[250px]"
             >
               {MARKET_OPTIONS.map((opt, i) => (
-                <option key={i} value={i}>{opt.label}</option>
+                <option key={i} value={i} disabled={opt.disabled}>
+                  {opt.label}
+                </option>
               ))}
             </select>
+            {selectedOption.disabled && selectedOption.disabledReason && (
+              <div className="mt-2 text-xs text-amber-400">
+                {selectedOption.disabledReason}
+              </div>
+            )}
           </div>
 
           {resolvedMarket && (
@@ -302,11 +453,13 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
       )}
 
       {/* ── Section 5: Entry/Exit Cost Calculator ── */}
-      {marketUniqueKey && (
+      {marketUniqueKey && !selectedOption.disabled && (
         <EntryCostCalculator
           ltv={params.ltv}
           leverage={params.leverage}
           startingCapital={params.startingCapital}
+          swapConfig={selectedOption.swapConfig}
+          gasProfile={selectedOption.gasProfile}
         />
       )}
 
