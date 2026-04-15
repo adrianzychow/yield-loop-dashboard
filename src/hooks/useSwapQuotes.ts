@@ -4,11 +4,12 @@ import { useState, useCallback, useRef } from "react";
 import { createPublicClient, http, type PublicClient } from "viem";
 import { mainnet } from "viem/chains";
 import {
-  fetchUniswapPoolData,
-  computeUniswapCosts,
+  fetchUniswapV3Costs,
   fetchCurveCosts,
+  fetchAggregatorCosts,
   compareVenues,
   type VenueComparison,
+  type SwapConfig,
   type SwapCostResult,
 } from "@/lib/swapQuotes";
 import {
@@ -18,6 +19,7 @@ import {
   computeGasCosts,
   gasToUsd,
   type GasCostBreakdown,
+  type GasProfile,
 } from "@/lib/gasEstimates";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -28,32 +30,34 @@ export interface EntryCostParams {
   ltv: number;
   gasPriceGwei: number;
   ethUsdPrice: number;
+  swapConfig: SwapConfig;
+  gasProfile: GasProfile;
 }
 
 export interface CostSummary {
   loops: number;
   totalSwapVol: number;
-  // Venue comparison (entry direction)
   entryVenues: VenueComparison;
-  // Venue comparison (exit direction)
   exitVenues: VenueComparison;
-  // Gas breakdowns (using recommended venue's gas profile)
   entryGas: GasCostBreakdown;
   exitGas: GasCostBreakdown;
-  // USD gas costs
   entryGasManualUsd: number;
   entryGasFlashBalancerUsd: number;
   entryGasFlashMorphoUsd: number;
+  entryGasFlashAaveUsd: number;
   exitGasManualUsd: number;
   exitGasFlashBalancerUsd: number;
   exitGasFlashMorphoUsd: number;
-  // Totals
+  exitGasFlashAaveUsd: number;
   entryTotalManual: number;
   entryTotalFlash: number;
   exitTotalManual: number;
   exitTotalFlash: number;
   flashSavingEntry: number;
   flashSavingExit: number;
+  aggregatorAvailable: boolean;
+  aggregatorSource: "0x" | "1inch" | null;
+  aggregatorError?: string;
 }
 
 // ── Hook ───────────────────────────────────────────────────────────
@@ -62,7 +66,6 @@ export function useSwapQuotes() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CostSummary | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const clientRef = useRef<PublicClient | null>(null);
 
   const fetchQuotes = useCallback(
@@ -80,62 +83,139 @@ export function useSwapQuotes() {
         if (!clientRef.current) {
           clientRef.current = createPublicClient({
             chain: mainnet,
-            transport: http(rpcUrl, { retryCount: 2, timeout: 15_000 }),
+            transport: http(rpcUrl, { retryCount: 2, timeout: 20_000 }),
           }) as PublicClient;
         }
         const client = clientRef.current;
 
-        const { startingCapital, leverage, ltv, gasPriceGwei, ethUsdPrice } = params;
+        const {
+          startingCapital,
+          leverage,
+          ltv,
+          gasPriceGwei,
+          ethUsdPrice,
+          swapConfig,
+          gasProfile,
+        } = params;
+
         const loops = loopCount(leverage, ltv);
-        const swapAmounts = perLoopSwapAmounts(startingCapital, ltv, loops);
+        // swap amounts in USD (the debt amount per loop)
+        const swapAmountsUsd = perLoopSwapAmounts(startingCapital, ltv, loops);
         const totalVol = totalSwapVolume(startingCapital, leverage);
 
-        // Fetch Curve and Uniswap quotes in parallel
-        const [curveEntry, curvExit, uniPool] = await Promise.all([
-          fetchCurveCosts(client, swapAmounts, "entry"),
-          fetchCurveCosts(client, swapAmounts, "exit"),
-          fetchUniswapPoolData(client),
-        ]);
+        // Convert USD amounts to input-token units. For stablecoins the debt
+        // token is ~1 USD/unit, for WETH we divide by ETH/USD.
+        const usdPerDebtToken =
+          swapConfig.debtToken.symbol === "WETH" ||
+          swapConfig.debtToken.symbol === "ETH"
+            ? ethUsdPrice
+            : 1;
+        const swapAmountsDebtTokens = swapAmountsUsd.map(
+          (u) => u / usdPerDebtToken
+        );
+        // Same amounts sized as collateral tokens for exit direction.
+        // For the purpose of cost estimation the absolute size matters less
+        // than the shape; we re-use debt-token amounts and rely on the
+        // aggregator / pool to report realistic rates.
+        const usdPerCollateralToken =
+          swapConfig.collateralToken.symbol === "wstETH"
+            ? ethUsdPrice * 1.2 // rough wstETH/USD at 1.2 ratio to ETH
+            : 1;
 
-        // Compute Uniswap costs if pool data available
-        let uniEntry: SwapCostResult | null = null;
-        let uniExit: SwapCostResult | null = null;
-        if (uniPool) {
-          uniEntry = computeUniswapCosts(swapAmounts, uniPool);
-          // Exit direction: same amounts, same pool depth approximation
-          uniExit = computeUniswapCosts(swapAmounts, uniPool);
-        }
+        const [curveEntry, curveExit, uniEntry, uniExit, aggEntry, aggExit] =
+          await Promise.all([
+            fetchCurveCosts(client, swapAmountsUsd, swapConfig, "entry"),
+            fetchCurveCosts(client, swapAmountsUsd, swapConfig, "exit"),
+            fetchUniswapV3Costs(
+              client,
+              swapAmountsDebtTokens,
+              usdPerDebtToken,
+              swapConfig,
+              "entry"
+            ),
+            fetchUniswapV3Costs(
+              client,
+              swapAmountsUsd.map((u) => u / usdPerCollateralToken),
+              usdPerCollateralToken,
+              swapConfig,
+              "exit"
+            ),
+            fetchAggregatorCosts(
+              swapAmountsDebtTokens,
+              usdPerDebtToken,
+              swapConfig,
+              "entry"
+            ),
+            fetchAggregatorCosts(
+              swapAmountsUsd.map((u) => u / usdPerCollateralToken),
+              usdPerCollateralToken,
+              swapConfig,
+              "exit"
+            ),
+          ]);
 
-        const entryVenues = compareVenues(curveEntry, uniEntry, totalVol);
-        const exitVenues = compareVenues(curvExit, uniExit, totalVol);
+        const entryVenues = compareVenues(curveEntry, uniEntry, aggEntry, totalVol);
+        const exitVenues = compareVenues(curveExit, uniExit, aggExit, totalVol);
 
-        // Gas costs — use recommended venue's swap gas
-        const entryGasVenue = entryVenues.recommended;
-        const exitGasVenue = exitVenues.recommended;
-        const entryGas = computeGasCosts(loops, entryGasVenue);
-        const exitGas = computeGasCosts(loops, exitGasVenue);
+        const entryGas = computeGasCosts(
+          loops,
+          entryVenues.recommended,
+          gasProfile
+        );
+        const exitGas = computeGasCosts(
+          loops,
+          exitVenues.recommended,
+          gasProfile
+        );
 
-        const entryGasManualUsd = gasToUsd(entryGas.manualTotal, gasPriceGwei, ethUsdPrice);
-        const entryGasFlashBalancerUsd = gasToUsd(entryGas.flashBalancerTotal, gasPriceGwei, ethUsdPrice);
-        const entryGasFlashMorphoUsd = gasToUsd(entryGas.flashMorphoTotal, gasPriceGwei, ethUsdPrice);
-        const exitGasManualUsd = gasToUsd(exitGas.manualTotal, gasPriceGwei, ethUsdPrice);
-        const exitGasFlashBalancerUsd = gasToUsd(exitGas.flashBalancerTotal, gasPriceGwei, ethUsdPrice);
-        const exitGasFlashMorphoUsd = gasToUsd(exitGas.flashMorphoTotal, gasPriceGwei, ethUsdPrice);
+        const g = (units: number) => gasToUsd(units, gasPriceGwei, ethUsdPrice);
 
-        // Pick recommended swap costs
-        const entrySwapCost =
-          entryVenues.recommended === "curve"
-            ? entryVenues.curve.totalCost
-            : (entryVenues.uniswap?.totalCost ?? entryVenues.curve.totalCost);
-        const exitSwapCost =
-          exitVenues.recommended === "curve"
-            ? exitVenues.curve.totalCost
-            : (exitVenues.uniswap?.totalCost ?? exitVenues.curve.totalCost);
+        const entryGasManualUsd = g(entryGas.manualTotal);
+        const entryGasFlashBalancerUsd = g(entryGas.flashBalancerTotal);
+        const entryGasFlashMorphoUsd = g(entryGas.flashMorphoTotal);
+        const entryGasFlashAaveUsd = g(entryGas.flashAaveTotal);
+        const exitGasManualUsd = g(exitGas.manualTotal);
+        const exitGasFlashBalancerUsd = g(exitGas.flashBalancerTotal);
+        const exitGasFlashMorphoUsd = g(exitGas.flashMorphoTotal);
+        const exitGasFlashAaveUsd = g(exitGas.flashAaveTotal);
+
+        const pickSwapCost = (v: VenueComparison): number => {
+          const selected: SwapCostResult =
+            v.recommended === "aggregator"
+              ? v.aggregator
+              : v.recommended === "uniswap"
+              ? v.uniswap
+              : v.curve;
+          return selected.available ? selected.totalCost : 0;
+        };
+
+        const entrySwapCost = pickSwapCost(entryVenues);
+        const exitSwapCost = pickSwapCost(exitVenues);
+
+        const minFlashGasEntry = Math.min(
+          entryGasFlashBalancerUsd,
+          entryGasFlashMorphoUsd,
+          entryGasFlashAaveUsd
+        );
+        const minFlashGasExit = Math.min(
+          exitGasFlashBalancerUsd,
+          exitGasFlashMorphoUsd,
+          exitGasFlashAaveUsd
+        );
 
         const entryTotalManual = entryGasManualUsd + entrySwapCost;
-        const entryTotalFlash = Math.min(entryGasFlashBalancerUsd, entryGasFlashMorphoUsd) + entrySwapCost;
+        const entryTotalFlash = minFlashGasEntry + entrySwapCost;
         const exitTotalManual = exitGasManualUsd + exitSwapCost;
-        const exitTotalFlash = Math.min(exitGasFlashBalancerUsd, exitGasFlashMorphoUsd) + exitSwapCost;
+        const exitTotalFlash = minFlashGasExit + exitSwapCost;
+
+        const aggregatorAvailable =
+          aggEntry.available || aggExit.available;
+        const aggregatorSource =
+          aggEntry.source ?? aggExit.source ?? null;
+        const aggregatorError =
+          !aggregatorAvailable
+            ? aggEntry.warning ?? aggExit.warning ?? undefined
+            : undefined;
 
         setResult({
           loops,
@@ -147,15 +227,20 @@ export function useSwapQuotes() {
           entryGasManualUsd,
           entryGasFlashBalancerUsd,
           entryGasFlashMorphoUsd,
+          entryGasFlashAaveUsd,
           exitGasManualUsd,
           exitGasFlashBalancerUsd,
           exitGasFlashMorphoUsd,
+          exitGasFlashAaveUsd,
           entryTotalManual,
           entryTotalFlash,
           exitTotalManual,
           exitTotalFlash,
           flashSavingEntry: entryTotalManual - entryTotalFlash,
           flashSavingExit: exitTotalManual - exitTotalFlash,
+          aggregatorAvailable,
+          aggregatorSource,
+          aggregatorError,
         });
       } catch (err) {
         setError((err as Error).message ?? "Failed to fetch swap quotes");
