@@ -87,6 +87,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
 
   const selectedOption = MARKET_OPTIONS[selectedMarketIdx];
   const isAaveMarket = selectedOption.venue === "Aave";
+  const isEthDebt = selectedOption.loaderType === "wsteth"; // borrow asset is WETH
 
   // Resolve market — pick highest liquidity (Morpho markets only)
   const resolvedMarket = isAaveMarket
@@ -143,6 +144,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
           marketUniqueKey,
           collateralAsset: selectedOption.collateralAsset,
           borrowAsset: selectedOption.borrowAsset,
+          debtDenomination: isEthDebt ? "ETH" : "USD",
           ...p,
         });
         pendingParams.current = null;
@@ -158,7 +160,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
         });
       }
     },
-    [data, marketUniqueKey, selectedOption, runSingleBacktest, loadData]
+    [data, marketUniqueKey, selectedOption, isEthDebt, runSingleBacktest, loadData]
   );
 
   // Auto-run when data finishes loading
@@ -170,10 +172,11 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
         marketUniqueKey,
         collateralAsset: selectedOption.collateralAsset,
         borrowAsset: selectedOption.borrowAsset,
+        debtDenomination: isEthDebt ? "ETH" : "USD",
         ...p,
       });
     }
-  }, [data, marketUniqueKey, selectedOption, runSingleBacktest]);
+  }, [data, marketUniqueKey, selectedOption, isEthDebt, runSingleBacktest]);
 
   return (
     <div className="space-y-6">
@@ -252,6 +255,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
           leverage={params.leverage}
           startingCapital={params.startingCapital}
           liquidationLtv={liquidationLtv}
+          debtDenomination={isEthDebt ? "ETH" : "USD"}
         />
       )}
 
@@ -318,6 +322,7 @@ export default function Backtester({ morphoMarkets }: BacktesterProps) {
               borrowAsset: selectedOption.borrowAsset,
               startingCapital: backtestResult.config.startingCapital,
               liquidationLtv,
+              debtDenomination: isEthDebt ? "ETH" : "USD",
               startTimestamp: backtestResult.config.startTimestamp,
               endTimestamp: backtestResult.config.endTimestamp,
             })
