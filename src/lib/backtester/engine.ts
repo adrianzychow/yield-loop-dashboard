@@ -15,10 +15,27 @@ import type {
  *
  * Position mechanics:
  * - At entry: deposit collateral, borrow, and loop to target leverage
- * - Collateral value tracks oracle price (includes exchange rate + price feeds)
- * - Debt accrues interest hourly based on historical Morpho borrow APY
+ * - Collateral value (USD) tracks oracle price (includes exchange rate + price feeds)
+ * - Debt accrues interest based on historical borrow APY
  * - Health factor = (collateralValue × LLTV) / debtValue
  * - Liquidation occurs when health factor < 1.0
+ *
+ * Debt denomination
+ * ─────────────────
+ * USD mode (default, e.g. sUSDS/USDT):
+ *   Debt is USD-pegged. debtValue grows only with borrow rate.
+ *
+ * ETH mode (e.g. wstETH/ETH loops):
+ *   Debt is denominated in WETH. We track debt internally in ETH, so a drop
+ *   in ETH/USD does NOT cause liquidation — both collateral_USD and debt_USD
+ *   scale with ETH/USD, leaving HF = (wstETH units × wstETH/ETH ratio × LLTV)
+ *                                       / debt_ETH. HF becomes ratio-only.
+ *
+ *   Fields used in ETH mode:
+ *     oraclePrice = wstETH/USD = (wstETH/ETH ratio) × (ETH/USD)
+ *     basePrice   = ETH/USD
+ *   Internally: debt_ETH = initialDebt_USD / ethUsd_at_entry, and
+ *               debt_USD_at_step = debt_ETH × basePrice_at_step.
  */
 export function runBacktest(
   config: BacktestConfig,
@@ -43,6 +60,7 @@ export function runBacktest(
 
   const entry = series[0];
   const { startingCapital, leverage, liquidationLtv } = config;
+  const useEthDenom = config.debtDenomination === "ETH";
 
   // ── Entry position ──────────────────────────────────────────────
   // Total assets = startingCapital × leverage
@@ -50,12 +68,20 @@ export function runBacktest(
   const totalAssetsUsd = startingCapital * leverage;
   const initialDebtUsd = totalAssetsUsd - startingCapital;
 
-  // Collateral units (in sUSDS terms) based on entry oracle price
+  // Collateral units (wstETH / sUSDS / etc.) based on entry oracle price
   const collateralUnits = totalAssetsUsd / entry.oraclePrice;
+
+  // For ETH-denominated debt: convert initial debt to ETH at entry price.
+  // entry.basePrice = ETH/USD at entry block.
+  const ethUsdAtEntry = useEthDenom && entry.basePrice > 0 ? entry.basePrice : 1;
+  const initialDebtEth = useEthDenom ? initialDebtUsd / ethUsdAtEntry : 0;
 
   // ── Simulation loop ─────────────────────────────────────────────
   const snapshots: HourlySnapshot[] = [];
-  let debtValue = initialDebtUsd;
+  // In USD mode: debtValueUsd is the canonical debt, accrues directly.
+  // In ETH mode: debtValueEth is canonical, debtValueUsd derived each step.
+  let debtValueUsd = initialDebtUsd;
+  let debtValueEth = initialDebtEth;
   let liquidated = false;
   let liquidationTimestamp: number | undefined;
   let peakEquity = startingCapital;
@@ -72,13 +98,26 @@ export function runBacktest(
       const prevPoint = series[i - 1];
       const hoursStep = (point.timestamp - prevPoint.timestamp) / 3600;
       const stepRate = point.borrowApy * (hoursStep / 8760);
-      debtValue = debtValue * (1 + stepRate);
+      if (useEthDenom) {
+        debtValueEth = debtValueEth * (1 + stepRate);
+      } else {
+        debtValueUsd = debtValueUsd * (1 + stepRate);
+      }
     }
 
-    // Current collateral value per oracle
+    // Current collateral value (USD) per oracle
     const collateralValue = collateralUnits * point.oraclePrice;
 
-    // Health factor
+    // In ETH mode, recompute debt in USD using CURRENT ETH/USD so the USD
+    // display tracks ETH price movement but HF remains ratio-based.
+    if (useEthDenom) {
+      const ethUsdNow = point.basePrice > 0 ? point.basePrice : ethUsdAtEntry;
+      debtValueUsd = debtValueEth * ethUsdNow;
+    }
+    const debtValue = debtValueUsd;
+
+    // Health factor — in ETH mode this simplifies to a pure ratio check
+    // since collateralValue and debtValue both scale with ETH/USD.
     const healthFactor =
       debtValue > 0
         ? (collateralValue * liquidationLtv) / debtValue

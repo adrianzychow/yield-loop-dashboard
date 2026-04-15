@@ -8,6 +8,9 @@ interface MarginForErrorProps {
   leverage: number;
   startingCapital: number;
   liquidationLtv: number;
+  /** "ETH" for wstETH/ETH loops where debt is in WETH and HF depends on the
+   *  collateral/debt ratio only. Defaults to "USD". */
+  debtDenomination?: "USD" | "ETH";
 }
 
 export default function MarginForError({
@@ -16,10 +19,26 @@ export default function MarginForError({
   leverage,
   startingCapital,
   liquidationLtv,
+  debtDenomination = "USD",
 }: MarginForErrorProps) {
   if (data.length === 0) return null;
 
-  const entryPrice = data[data.length - 1].oraclePrice; // use latest price as entry
+  const useEthDenom = debtDenomination === "ETH";
+  // For ETH-denominated debt, liquidation depends on the collateral/debt
+  // RATIO (wstETH/ETH). USD price swings of ETH affect both sides equally,
+  // so drawdowns in USD aren't what triggers liquidation. Use the ratio
+  // series as the "price" input for HF math.
+  const priceOf = (p: HourlyDataPoint) =>
+    useEthDenom
+      ? p.basePrice > 0
+        ? p.oraclePrice / p.basePrice // wstETH/ETH ratio
+        : p.exchangeRate ?? 1
+      : p.oraclePrice;
+
+  const priceUnit = useEthDenom ? "" : "$";
+  const priceLabel = useEthDenom ? "wstETH/ETH ratio" : "oracle price";
+
+  const entryPrice = priceOf(data[data.length - 1]); // latest value as entry
   const totalAssets = startingCapital * leverage;
   const debt = totalAssets - startingCapital;
   const collateralUnits = totalAssets / entryPrice;
@@ -31,16 +50,18 @@ export default function MarginForError({
   //    => price = debt / (units × LLTV)
   const liquidationPrice = debt > 0 ? debt / (collateralUnits * liquidationLtv) : 0;
 
-  // 3. Max drawdown from historical oracle data
-  let peak = data[0].oraclePrice;
+  // 3. Max drawdown — in ETH mode this is drawdown of the ratio, which is
+  //    what actually matters for liquidation risk
+  let peak = priceOf(data[0]);
   let maxDD = 0;
-  let troughPrice = data[0].oraclePrice;
+  let troughPrice = priceOf(data[0]);
   for (const p of data) {
-    if (p.oraclePrice > peak) peak = p.oraclePrice;
-    const dd = (peak - p.oraclePrice) / peak;
+    const price = priceOf(p);
+    if (price > peak) peak = price;
+    const dd = (peak - price) / peak;
     if (dd > maxDD) {
       maxDD = dd;
-      troughPrice = p.oraclePrice;
+      troughPrice = price;
     }
   }
 
@@ -87,16 +108,16 @@ export default function MarginForError({
                 {startingHF === Infinity ? "N/A (no debt)" : startingHF.toFixed(4)}
               </td>
               <td className="py-3 px-3 pl-6 text-xs text-gray-500">
-                (Collateral × LLTV) / Debt at entry price ${entryPrice.toFixed(4)}
+                (Collateral × LLTV) / Debt at entry {priceLabel} {priceUnit}{entryPrice.toFixed(4)}
               </td>
             </tr>
             <tr className="border-b border-gray-800">
               <td className="py-3 px-3 text-gray-300 font-medium">Liquidation Price</td>
               <td className="py-3 px-3 text-right font-semibold text-red-400">
-                ${liquidationPrice.toFixed(4)}
+                {priceUnit}{liquidationPrice.toFixed(4)}
               </td>
               <td className="py-3 px-3 pl-6 text-xs text-gray-500">
-                Oracle price where HF = 1.0 (debt / (units × LLTV))
+                {useEthDenom ? "wstETH/ETH ratio" : "Oracle price"} where HF = 1.0 (debt / (units × LLTV))
               </td>
             </tr>
             <tr className="border-b border-gray-800">
@@ -105,7 +126,7 @@ export default function MarginForError({
                 {worstCaseHF === Infinity ? "N/A" : worstCaseHF.toFixed(4)}
               </td>
               <td className="py-3 px-3 pl-6 text-xs text-gray-500">
-                HF if max historical drawdown ({(maxDD * 100).toFixed(2)}%) occurs from entry — price at ${worstCasePrice.toFixed(4)}
+                HF if max historical {useEthDenom ? "ratio" : "price"} drawdown ({(maxDD * 100).toFixed(2)}%) occurs from entry — {priceLabel} at {priceUnit}{worstCasePrice.toFixed(4)}
               </td>
             </tr>
             <tr className="border-b border-gray-800">
@@ -114,7 +135,7 @@ export default function MarginForError({
                 {(buffer * 100).toFixed(2)}%
               </td>
               <td className="py-3 px-3 pl-6 text-xs text-gray-500">
-                Price can drop {(buffer * 100).toFixed(2)}% from entry (${entryPrice.toFixed(4)} → ${liquidationPrice.toFixed(4)}) before liquidation
+                {useEthDenom ? "Ratio" : "Price"} can drop {(buffer * 100).toFixed(2)}% from entry ({priceUnit}{entryPrice.toFixed(4)} → {priceUnit}{liquidationPrice.toFixed(4)}) before liquidation
               </td>
             </tr>
           </tbody>
@@ -151,10 +172,16 @@ export default function MarginForError({
           )}
         </div>
         <div className="flex justify-between text-xs text-gray-600 mt-1">
-          <span className="text-red-400">Liq: ${liquidationPrice.toFixed(4)}</span>
-          {maxDD > 0 && <span className="text-amber-400">Worst: ${worstCasePrice.toFixed(4)}</span>}
-          <span className="text-emerald-400">Entry: ${entryPrice.toFixed(4)}</span>
+          <span className="text-red-400">Liq: {priceUnit}{liquidationPrice.toFixed(4)}</span>
+          {maxDD > 0 && <span className="text-amber-400">Worst: {priceUnit}{worstCasePrice.toFixed(4)}</span>}
+          <span className="text-emerald-400">Entry: {priceUnit}{entryPrice.toFixed(4)}</span>
         </div>
+        {useEthDenom && (
+          <div className="mt-3 text-xs text-gray-500 italic">
+            Debt is denominated in WETH — HF depends on the wstETH/ETH ratio only.
+            ETH/USD movements do not cause liquidation.
+          </div>
+        )}
       </div>
     </div>
   );

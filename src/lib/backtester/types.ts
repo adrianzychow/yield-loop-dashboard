@@ -42,6 +42,10 @@ export interface BacktestConfig {
   leverage: number; // e.g., 3.0
   // Market parameters
   liquidationLtv: number; // From Morpho market LLTV (0-1)
+  // Debt denomination: "USD" for stablecoin loans, "ETH" for WETH loans.
+  // When "ETH", debt is tracked in ETH units and HF depends only on the
+  // collateral/debt RATIO — not on ETH/USD price movements.
+  debtDenomination?: "USD" | "ETH";
   // Time range
   startTimestamp?: number; // Unix seconds, defaults to earliest data
   endTimestamp?: number; // Unix seconds, defaults to latest data
