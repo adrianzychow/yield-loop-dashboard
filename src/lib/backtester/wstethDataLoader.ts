@@ -5,7 +5,7 @@
  * - wstETH/stETH ratio: Lido stETH.getPooledEthByShares (on-chain)
  * - ETH/USD price: Chainlink ETH/USD feed (on-chain)
  * - CAPO ceiling: WstETHPriceCapAdapter (on-chain, fetched once)
- * - wstETH/USD off-chain price: CoinGecko (for oracle deviation analysis)
+ * - wstETH/USD off-chain price: DeFiLlama Coins API (oracle deviation analysis)
  * - Borrow APY: Morpho GraphQL API (interval: HOUR) for wstETH/WETH market
  * - Oracle price: min(lidoRatio, capoCeiling) * ETH/USD
  */
@@ -19,6 +19,7 @@ import {
   fetchWstEthOracleAtBlock,
   type CapoParams,
 } from "../wsteth-oracle";
+import { fetchLlamaHourly, LLAMA_IDS } from "@/lib/api/defillama-prices";
 import type { PublicClient } from "viem";
 
 const MORPHO_API = "https://blue-api.morpho.org/graphql";
@@ -33,56 +34,6 @@ function getIntervalSeconds(daysBack: number): number {
   return 3600 * 6;
 }
 
-// ── CoinGecko wstETH price (off-chain comparison) ──────────────────
-
-async function fetchCoinGeckoHourly(
-  cgId: string,
-  startTimestamp: number,
-  endTimestamp: number
-): Promise<{ timestamp: number; price: number }[]> {
-  const CHUNK_DAYS = 89;
-  const CHUNK_SECONDS = CHUNK_DAYS * 86400;
-  const allPrices: { timestamp: number; price: number }[] = [];
-
-  let from = startTimestamp;
-  while (from < endTimestamp) {
-    const to = Math.min(from + CHUNK_SECONDS, endTimestamp);
-    const cgUrl = `https://api.coingecko.com/api/v3/coins/${cgId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`;
-    const proxyUrl = `/api/backtest?cgUrl=${encodeURIComponent(cgUrl)}`;
-
-    try {
-      const res = await fetch(proxyUrl);
-      if (!res.ok) {
-        console.warn(`CoinGecko ${cgId} chunk failed: ${res.status}`);
-        from = to;
-        continue;
-      }
-      const json = await res.json();
-      const prices = (json.prices ?? []).map(
-        ([ts, price]: [number, number]) => ({
-          timestamp: Math.floor(ts / 1000),
-          price,
-        })
-      );
-      allPrices.push(...prices);
-    } catch (err) {
-      console.warn(`CoinGecko ${cgId} fetch error:`, err);
-    }
-
-    from = to;
-    if (from < endTimestamp) {
-      await new Promise((r) => setTimeout(r, 1500));
-    }
-  }
-
-  const byHour = new Map<number, { timestamp: number; price: number }>();
-  for (const p of allPrices) {
-    const hourKey = Math.floor(p.timestamp / 3600) * 3600;
-    byHour.set(hourKey, { timestamp: hourKey, price: p.price });
-  }
-
-  return Array.from(byHour.values()).sort((a, b) => a.timestamp - b.timestamp);
-}
 
 // ── DeFiLlama Aave borrow rates ────────────────────────────────────
 
@@ -315,14 +266,16 @@ export async function loadWstEthBacktestDataClient(
       });
       return snapshots;
     })(),
-    // CoinGecko: wstETH/USD for deviation analysis
+    // DeFiLlama: wstETH/USD for oracle deviation analysis
     (async () => {
       onProgress?.({
-        stage: "coingecko",
-        message: "Fetching CoinGecko wstETH prices...",
+        stage: "prices",
+        message: "Fetching DeFiLlama wstETH prices...",
         percent: 20,
       });
-      return fetchCoinGeckoHourly("wrapped-steth", startTimestamp, endTimestamp);
+      const daysBack = Math.ceil((endTimestamp - startTimestamp) / 86400);
+      const periodHours = daysBack > 90 ? 4 : 1;
+      return fetchLlamaHourly(LLAMA_IDS.wstETH, startTimestamp, endTimestamp, periodHours);
     })(),
     // Borrow rates: Morpho or Aave depending on market key
     (async () => {

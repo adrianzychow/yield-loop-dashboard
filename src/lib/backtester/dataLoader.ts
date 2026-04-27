@@ -6,7 +6,7 @@
  * - sUSDS exchange rate: Archive node RPC via viem (convertToAssets at blocks)
  * - DAI/USD price: Chainlink aggregator on-chain (BASE_FEED_1 from oracle)
  * - USDT/USD price: Chainlink aggregator on-chain (QUOTE_FEED_1 from oracle)
- * - sUSDS/USD off-chain price: CoinGecko (for oracle deviation analysis only)
+ * - sUSDS/USD off-chain price: DeFiLlama Coins API (oracle deviation analysis)
  * - Borrow APY: Morpho GraphQL API (interval: HOUR)
  * - Oracle price: Computed from on-chain components per MorphoChainlinkOracleV2
  */
@@ -18,13 +18,14 @@ import {
   batchGetOracleSnapshots,
   type OracleSnapshot,
 } from "./onchain";
+import { fetchLlamaHourly, LLAMA_IDS } from "@/lib/api/defillama-prices";
 
 const MORPHO_API = "https://blue-api.morpho.org/graphql";
 
 // ── Progress callback type ──────────────────────────────────────────
 
 export type LoadProgress = {
-  stage: "blocks" | "onchain" | "coingecko" | "morpho" | "aligning" | "done";
+  stage: "blocks" | "onchain" | "prices" | "morpho" | "aligning" | "done";
   message: string;
   percent: number;
 };
@@ -36,58 +37,6 @@ function getIntervalSeconds(daysBack: number): number {
   if (daysBack <= 45) return 3600 * 2;  // 2-hourly for ≤45 days
   if (daysBack <= 90) return 3600 * 4;  // 4-hourly for ≤90 days
   return 3600 * 6;                       // 6-hourly for >90 days
-}
-
-// ── CoinGecko (off-chain comparison only) ───────────────────────────
-
-async function fetchCoinGeckoHourly(
-  cgId: string,
-  startTimestamp: number,
-  endTimestamp: number
-): Promise<{ timestamp: number; price: number }[]> {
-  const CHUNK_DAYS = 89;
-  const CHUNK_SECONDS = CHUNK_DAYS * 86400;
-  const allPrices: { timestamp: number; price: number }[] = [];
-
-  let from = startTimestamp;
-  while (from < endTimestamp) {
-    const to = Math.min(from + CHUNK_SECONDS, endTimestamp);
-    const cgUrl = `https://api.coingecko.com/api/v3/coins/${cgId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`;
-    // Proxy through our API route to avoid CoinGecko CORS block in browser
-    const proxyUrl = `/api/backtest?cgUrl=${encodeURIComponent(cgUrl)}`;
-
-    try {
-      const res = await fetch(proxyUrl);
-      if (!res.ok) {
-        console.warn(`CoinGecko ${cgId} chunk failed: ${res.status}`);
-        from = to;
-        continue;
-      }
-      const json = await res.json();
-      const prices = (json.prices ?? []).map(
-        ([ts, price]: [number, number]) => ({
-          timestamp: Math.floor(ts / 1000),
-          price,
-        })
-      );
-      allPrices.push(...prices);
-    } catch (err) {
-      console.warn(`CoinGecko ${cgId} fetch error:`, err);
-    }
-
-    from = to;
-    if (from < endTimestamp) {
-      await new Promise((r) => setTimeout(r, 1500));
-    }
-  }
-
-  const byHour = new Map<number, { timestamp: number; price: number }>();
-  for (const p of allPrices) {
-    const hourKey = Math.floor(p.timestamp / 3600) * 3600;
-    byHour.set(hourKey, { timestamp: hourKey, price: p.price });
-  }
-
-  return Array.from(byHour.values()).sort((a, b) => a.timestamp - b.timestamp);
 }
 
 // ── Morpho hourly borrow rates ──────────────────────────────────────
@@ -294,14 +243,16 @@ export async function loadBacktestDataClient(
       });
       return snapshots;
     })(),
-    // CoinGecko: off-chain price for deviation analysis
+    // DeFiLlama: off-chain price for oracle deviation analysis
     (async () => {
       onProgress?.({
-        stage: "coingecko",
-        message: "Fetching CoinGecko prices...",
+        stage: "prices",
+        message: "Fetching DeFiLlama prices...",
         percent: 20,
       });
-      return fetchCoinGeckoHourly("susds", startTimestamp, endTimestamp);
+      const daysBack = Math.ceil((endTimestamp - startTimestamp) / 86400);
+      const periodHours = daysBack > 90 ? 4 : 1;
+      return fetchLlamaHourly(LLAMA_IDS.sUSDS, startTimestamp, endTimestamp, periodHours);
     })(),
     // Morpho: borrow rates
     (async () => {
