@@ -13,8 +13,8 @@ import { runBacktest } from "@/lib/backtester/engine";
 import { runOptimization } from "@/lib/backtester/optimizer";
 import { runCapacityAnalysis } from "@/lib/backtester/capacity";
 import { analyzeExitSignals } from "@/lib/backtester/exitSignals";
-import { loadBacktestDataClient, type LoadProgress } from "@/lib/backtester/dataLoader";
-import { loadWstEthBacktestDataClient } from "@/lib/backtester/wstethDataLoader";
+import type { LoadProgress } from "@/lib/backtester/dataLoader";
+import { loadBacktestData, loadWstEthBacktestData } from "@/lib/backtester/dbDataLoader";
 
 interface UseBacktestReturn {
   data: HourlyDataPoint[] | null;
@@ -101,14 +101,14 @@ export function useBacktest(): UseBacktestReturn {
 
     const loadPromise =
       opts.loaderType === "wsteth"
-        ? loadWstEthBacktestDataClient(
+        ? loadWstEthBacktestData(
             rpcUrl,
             opts.marketUniqueKey,
             opts.startTimestamp,
             opts.endTimestamp,
             (progress) => setLoadProgress(progress)
           )
-        : loadBacktestDataClient(
+        : loadBacktestData(
             rpcUrl,
             opts.marketUniqueKey,
             opts.vaultAddress,
