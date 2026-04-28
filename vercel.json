@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/ingest-oracle",
-      "schedule": "0 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
